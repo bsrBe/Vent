@@ -370,46 +370,8 @@ export default function MoodPage() {
         <p className="text-muted-foreground">Track and analyze your emotional patterns over time.</p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {/* Today's Mood Card */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle>Today's Mood</CardTitle>
-            <CardDescription>How are you feeling today?</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {isLoadingMoodTypes || isLoadingCalendar ? (
-              <div className="flex flex-wrap gap-2">
-                <Skeleton className="h-10 w-24 rounded-full" />
-                <Skeleton className="h-10 w-20 rounded-full" />
-                <Skeleton className="h-10 w-28 rounded-full" />
-              </div>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {moodTypes.map((mood) => (
-                  <Button
-                    key={mood._id}
-                    variant="outline"
-                    // Highlight button if it matches today's recorded mood
-                    className={`h-10 px-3 ${todaysMood?._id === mood._id ? getMoodColorClass(mood.colorCode) : ""}`}
-                    onClick={() => handleLogTodayMood(mood._id)}
-                    disabled={!!isLoggingMood} // Disable all buttons while any mood is being logged
-                  >
-                    {isLoggingMood === mood._id ? ( // Show loader only on the button being logged
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <span className="mr-1 text-base">{mood.emoji}</span>
-                    )}
-                    <span>{mood.name}</span>
-                  </Button>
-                ))}
-                 {moodTypes.length === 0 && <p className="text-sm text-muted-foreground">No mood types found.</p>}
-                 {moodTypes.length > 0 && !todaysMood && <p className="text-sm text-muted-foreground">No mood logged today.</p>}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
+      {/* Adjusted grid layout since one card is removed */}
+      <div className="grid gap-4 md:grid-cols-2">
         {/* Most Frequent Mood Card */}
         <Card>
           <CardHeader className="pb-2">
@@ -444,8 +406,8 @@ export default function MoodPage() {
           </CardContent>
         </Card>
 
-        {/* Custom Date Range Card */}
-        <Card className="md:col-span-2 lg:col-span-1">
+        {/* Custom Date Range Card - Spans full width on medium screens now */}
+        <Card className="md:col-span-1">
           <CardHeader className="pb-2">
             <CardTitle>Date Range</CardTitle>
             <CardDescription>Select a time period to analyze</CardDescription>

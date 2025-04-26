@@ -295,20 +295,7 @@ export default function DashboardPage() {
           )}
           <p className="text-muted-foreground">How are you feeling today? Write it down and reflect.</p>
         </div>
-        <div className="flex items-center gap-2">
-          <SearchBar onSearch={handleSearch} />
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="outline" className="justify-start text-left font-normal">
-                <CalendarIcon className="mr-2 h-4 w-4" />
-                {date ? format(date, "PPP") : <span>Pick a date</span>}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-auto p-0">
-              <Calendar mode="single" selected={date} onSelect={setDate} initialFocus />
-            </PopoverContent>
-          </Popover>
-        </div>
+        {/* Removed SearchBar and Date Picker Popover */}
       </div>
 
       <Tabs defaultValue="new-entry" className="space-y-4" onValueChange={setActiveTab} value={activeTab}>
@@ -403,14 +390,9 @@ export default function DashboardPage() {
           </Card>
         </TabsContent>
         <TabsContent value="recent-entries" className="space-y-4">
-          <div className="flex justify-between">
+          <div> {/* Removed flex justify-between */}
             <h2 className="text-xl font-semibold">Your Recent Entries</h2>
-            <Link href="/dashboard/search">
-              <Button variant="outline" size="sm">
-                <Search className="mr-2 h-4 w-4" />
-                Search All Entries
-              </Button>
-            </Link>
+            {/* Removed Search All Entries Button Link */}
           </div>
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
            {isLoadingEntries ? (

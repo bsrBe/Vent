@@ -8,7 +8,23 @@ const { subMonths, startOfDay, endOfDay, format } = require('date-fns'); // Remo
 
 // Get all available mood types
 exports.getMoodTypes = catchAsync(async (req, res, next) => {
-  const moodTypes = await MoodType.find();
+  let moodTypes = await MoodType.find().lean(); // Use .lean() for plain JS objects
+
+  // Check if the logged-in user is betsi2426@gmail.com
+  if (req.user && req.user.email === 'betsi2426@gmail.com') {
+    // Define the special "Bisrat" mood type
+    const bisratMoodType = {
+      _id: new mongoose.Types.ObjectId().toString(), // Generate a temporary unique ID as string
+      name: 'Bisrat',
+      emoji: '🌟', // Placeholder emoji
+      colorCode: '#FFD700', // Placeholder color (Gold)
+      description: 'Special category for Bisrat',
+      // Timestamps aren't typically needed for virtual types unless frontend expects them
+    };
+    // Add the special mood type to the list
+    moodTypes.push(bisratMoodType);
+  }
+
   res.status(200).json({
     status: 'success',
     results: moodTypes.length,

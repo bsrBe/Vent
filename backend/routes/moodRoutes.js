@@ -10,13 +10,13 @@ router.use(protect);
 // Route for getting available mood types
 router.get('/types', moodController.getMoodTypes); // GET /api/v1/moods/types
 
-// Routes for managing user's mood entries
-router
-  .route('/')
-  .get(moodController.getMoods) // GET /api/v1/moods (with filtering/pagination query params)
-  .post(moodController.createMood); // POST /api/v1/moods
+// Removed routes for GET / and POST / as moods are managed via entries
+// router
+//   .route('/')
+//   .get(moodController.getMoods)
+//   .post(moodController.createMood);
 
-// Routes for mood statistics, calendar, and insights
+// Routes for mood statistics, calendar, and insights (derived from entries)
 router.get('/stats', moodController.getMoodStats); // GET /api/v1/moods/stats
 router.get('/calendar', moodController.getMoodCalendar); // GET /api/v1/moods/calendar
 router.get('/insights', moodController.getMoodInsights); // GET /api/v1/moods/insights

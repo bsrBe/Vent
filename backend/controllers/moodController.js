@@ -84,63 +84,7 @@ exports.getMoods = catchAsync(async (req, res, next) => {
   });
 });
 
-// Create a new mood entry
-exports.createMood = catchAsync(async (req, res, next) => {
-  const userId = req.user.id;
-  const { moodTypeId, intensity, date, timeOfDay, notes, journalEntryId } = req.body;
-
-  if (!moodTypeId) {
-    return next(new AppError('Please provide a mood type ID', 400));
-  }
-
-  // Validate mood type exists
-  const moodTypeExists = await MoodType.findById(moodTypeId);
-  if (!moodTypeExists) {
-    return next(new AppError('Invalid mood type ID', 400));
-  }
-
-  // Validate journal entry if provided
-  if (journalEntryId) {
-    const entryExists = await JournalEntry.findOne({ _id: journalEntryId, user: userId });
-    if (!entryExists) {
-      return next(new AppError('Invalid journal entry ID or entry does not belong to user', 400));
-    }
-    // Check if this journal entry already has a mood linked? Depends on desired logic.
-    // const existingMoodLink = await Mood.findOne({ journalEntry: journalEntryId });
-    // if (existingMoodLink) {
-    //   return next(new AppError('This journal entry is already linked to a mood', 400));
-    // }
-  }
-
-  const moodData = {
-    moodType: moodTypeId,
-    user: userId,
-    intensity: intensity, // Uses default from schema if undefined
-    date: date ? parseISO(date) : new Date(),
-    // Combine date and time if timeOfDay is provided
-    timeOfDay: timeOfDay ? parseISO(`${format(date ? parseISO(date) : new Date(), 'yyyy-MM-dd')}T${timeOfDay}`) : null,
-    notes,
-    journalEntry: journalEntryId || null,
-  };
-
-  const newMood = await Mood.create(moodData);
-
-  // If linked to a journal entry, update the entry's mood field
-  if (journalEntryId) {
-      await JournalEntry.findByIdAndUpdate(journalEntryId, { mood: newMood._id });
-  }
-
-  // Re-fetch to populate associated data
-  const populatedMood = await Mood.findById(newMood._id);
-
-
-  res.status(201).json({
-    status: 'success',
-    data: {
-      mood: populatedMood,
-    },
-  });
-});
+// Removed standalone createMood function as moods are now created/managed via entryController
 
 // Get mood statistics for the user
 exports.getMoodStats = catchAsync(async (req, res, next) => {
@@ -174,34 +118,53 @@ exports.getMoodStats = catchAsync(async (req, res, next) => {
       break;
   }
 
-  // Use Aggregation Pipeline for stats
-  const stats = await Mood.aggregate([
+  // --- New Aggregation Pipeline starting from Entries ---
+  const stats = await JournalEntry.aggregate([
+    // 1. Match entries by user and date range
     {
       $match: {
-        user: req.user.id, // Corrected: Match moods for the logged-in user using req.user.id
-        date: { $gte: fromDate, $lte: toDate }, // Match within the date range
-      },
+        user: req.user.id, // Match entries for the logged-in user
+        createdAt: { $gte: fromDate, $lte: toDate }, // Match entries within the date range
+        mood: { $exists: true, $ne: null } // Only include entries that have a mood linked
+      }
     },
+    // 2. Lookup the associated Mood document
     {
-      $lookup: { // Join with MoodTypes collection
-        from: 'moodtypes', // The actual name of the MoodTypes collection in MongoDB
-        localField: 'moodType',
+      $lookup: {
+        from: 'moods', // Collection name for Moods
+        localField: 'mood',
         foreignField: '_id',
-        as: 'moodTypeDetails',
-      },
+        as: 'moodDetails'
+      }
     },
+    // 3. Unwind the moodDetails array (should only be one mood per entry)
     {
-      $unwind: '$moodTypeDetails', // Deconstruct the moodTypeDetails array
+      $unwind: '$moodDetails'
     },
+    // 4. Lookup the associated MoodType document
+    {
+      $lookup: {
+        from: 'moodtypes', // Collection name for MoodTypes
+        localField: 'moodDetails.moodType',
+        foreignField: '_id',
+        as: 'moodTypeDetails'
+      }
+    },
+    // 5. Unwind the moodTypeDetails array
+    {
+      $unwind: '$moodTypeDetails'
+    },
+    // 6. Group by MoodType to count occurrences
     {
       $group: {
-        _id: '$moodType', // Group by moodType ID
-        moodTypeName: { $first: '$moodTypeDetails.name' }, // Get the name
-        moodTypeEmoji: { $first: '$moodTypeDetails.emoji' }, // Get the emoji
-        moodTypeColor: { $first: '$moodTypeDetails.colorCode' }, // Get the color
-        count: { $sum: 1 }, // Count occurrences of each mood type
-        avgIntensity: { $avg: '$intensity' }, // Calculate average intensity
-      },
+        _id: '$moodTypeDetails._id', // Group by MoodType ID
+        moodTypeName: { $first: '$moodTypeDetails.name' },
+        moodTypeEmoji: { $first: '$moodTypeDetails.emoji' },
+        moodTypeColor: { $first: '$moodTypeDetails.colorCode' },
+        count: { $sum: 1 }, // Count entries for each mood type
+        // Note: avgIntensity might be less relevant now or need recalculation based on entry context if needed
+        // avgIntensity: { $avg: '$moodDetails.intensity' } // Example if intensity is stored on Mood
+      }
     },
     {
       $sort: { count: -1 }, // Sort by count descending (most frequent first)
@@ -216,7 +179,7 @@ exports.getMoodStats = catchAsync(async (req, res, next) => {
                colorCode: '$moodTypeColor'
            },
            count: 1,
-           averageIntensity: '$avgIntensity'
+           // averageIntensity: '$avgIntensity' // Include if needed
        }
     }
   ]);
@@ -251,25 +214,39 @@ exports.getMoodCalendar = catchAsync(async (req, res, next) => {
   const startDate = startOfDay(new Date(year, month - 1, 1)); // First day of the month
   const endDate = endOfDay(new Date(year, month, 0)); // Last day of the month
 
-  // Find moods within the month
-  const moods = await Mood.find({
+  // --- Find Entries with Moods within the month ---
+  const entries = await JournalEntry.find({
     user: userId,
-    date: { $gte: startDate, $lte: endDate },
+    createdAt: { $gte: startDate, $lte: endDate }, // Filter by entry creation date
+    mood: { $exists: true, $ne: null } // Ensure mood is linked
   })
-  .populate('moodType', 'name emoji colorCode') // Populate mood type details
-  .sort('date'); // Sort by date
+  .populate({ // Populate the linked mood
+      path: 'mood',
+      populate: { // Then populate the moodType within the mood
+          path: 'moodType',
+          select: 'name emoji colorCode' // Select desired fields from MoodType
+      }
+  })
+  .sort('createdAt'); // Sort by entry creation date
 
-  // Format data for calendar: group moods by date
-  const calendarData = moods.reduce((acc, mood) => {
-    const dateKey = format(mood.date, 'yyyy-MM-dd');
+  // Format data for calendar: group entry moods by date
+  const calendarData = entries.reduce((acc, entry) => {
+    // Ensure mood and moodType are populated before proceeding
+    if (!entry.mood || !entry.mood.moodType) {
+        console.warn(`Entry ${entry._id} is missing populated mood or moodType.`);
+        return acc; // Skip this entry if data is incomplete
+    }
+
+    const dateKey = format(entry.createdAt, 'yyyy-MM-dd'); // Use entry's creation date
     if (!acc[dateKey]) {
       acc[dateKey] = [];
     }
+    // Push data based on the linked mood
     acc[dateKey].push({
-      id: mood._id,
-      intensity: mood.intensity,
-      notes: mood.notes,
-      moodType: mood.moodType, // Already populated
+      id: entry.mood._id, // Use the mood's ID
+      intensity: entry.mood.intensity, // Get intensity from mood
+      notes: entry.mood.notes, // Get notes from mood
+      moodType: entry.mood.moodType, // Use the populated moodType object
     });
     return acc;
   }, {});

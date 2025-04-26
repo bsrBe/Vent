@@ -4,7 +4,8 @@ import type React from "react"
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Bell, Home, LogOut, Search, User } from "lucide-react"
+// Removed Bell import
+import { Home, LogOut, Search, User } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -30,12 +31,7 @@ export default function DashboardLayout({
             </Link>
           </div>
           <div className="flex items-center gap-4">
-            <Button variant="ghost" size="icon" asChild>
-              <Link href="/dashboard/notifications">
-                <Bell className="h-5 w-5" />
-                <span className="sr-only">Notifications</span>
-              </Link>
-            </Button>
+            {/* Removed Notifications Button */}
             <ModeToggle />
             <Link href="/dashboard/profile">
               <Avatar className="h-8 w-8">

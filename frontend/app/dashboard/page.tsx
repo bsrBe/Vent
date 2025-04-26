@@ -1,10 +1,10 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react" // Added useCallback
+import { useState, useEffect, useCallback } from "react"
 import { format } from "date-fns"
-import { CalendarIcon, Pencil, Save, Search, Sparkles, Loader2 } from "lucide-react" // Added Loader2
+import { CalendarIcon, Pencil, Save, Search, Sparkles, Loader2, X } from "lucide-react" // Added Loader2 and X
 import Link from "next/link"
-import { useRouter } from "next/navigation" // Keep useRouter
+import { useRouter } from "next/navigation"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
@@ -15,8 +15,17 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { SearchBar } from "@/components/search-bar"
 import { Input } from "@/components/ui/input"
 import { useToast } from "@/components/ui/use-toast"
-import { fetchAuthenticated } from "@/lib/api" // Import the authenticated fetch helper
-import { Skeleton } from "@/components/ui/skeleton" // Import Skeleton for loading states
+import { fetchAuthenticated } from "@/lib/api"
+import { Skeleton } from "@/components/ui/skeleton"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+  DialogClose,
+} from "@/components/ui/dialog" // Import Dialog components
 
 // Define types for API data (adjust based on actual backend response)
 interface User {
@@ -103,7 +112,7 @@ export default function DashboardPage() {
   const [isLoadingUser, setIsLoadingUser] = useState(true)
   const [isLoadingMoods, setIsLoadingMoods] = useState(true)
   const [isLoadingEntries, setIsLoadingEntries] = useState(true)
-  const [expandedEntryId, setExpandedEntryId] = useState<string | null>(null); // State for expanded entry
+  const [selectedEntryForModal, setSelectedEntryForModal] = useState<Entry | null>(null); // State for modal view
 
   // Fetch user data
   useEffect(() => {
@@ -450,28 +459,75 @@ export default function DashboardPage() {
                       {categories.find((c) => c.id === entry.category)?.name}
                     </span>
                   </div>
-                  {/* Conditionally render full content or truncated content */}
-                  <p className={`text-sm text-muted-foreground ${expandedEntryId !== entry._id ? 'line-clamp-4' : ''}`}>
+                  {/* Always render truncated content in the card */}
+                  <p className="text-sm text-muted-foreground line-clamp-4">
                     {entry.content}
                   </p>
                 </CardContent>
                 <CardFooter>
-                  {/* Toggle expansion on button click */}
+                  {/* Set entry for modal view on button click */}
                   <Button
                     variant="ghost"
                     className="w-full"
                     size="sm"
-                    onClick={() => setExpandedEntryId(expandedEntryId === entry._id ? null : entry._id)}
+                    onClick={() => setSelectedEntryForModal(entry)} // Set the entry for modal view
                   >
-                    {expandedEntryId === entry._id ? "Read Less" : "Read More"}
+                    Read More
                   </Button>
-                  </CardFooter>
+                </CardFooter>
                 </Card>
               ))
             )}
           </div>
         </TabsContent>
       </Tabs>
+
+      {/* Entry Detail Modal */}
+      <Dialog open={!!selectedEntryForModal} onOpenChange={(isOpen) => !isOpen && setSelectedEntryForModal(null)}>
+        <DialogContent className="sm:max-w-2xl"> {/* Make modal wider */}
+          {selectedEntryForModal && (
+            <>
+              <DialogHeader>
+                <div className="flex items-start justify-between">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-2xl" title={selectedEntryForModal.mood?.moodType?.name}>
+                        {selectedEntryForModal.mood?.moodType?.emoji || '❓'}
+                      </span>
+                      <DialogTitle className="text-xl">{selectedEntryForModal.title}</DialogTitle>
+                    </div>
+                    <DialogDescription>
+                      {format(new Date(selectedEntryForModal.createdAt), "MMMM d, yyyy")} - {" "}
+                      <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                        {categories.find((c) => c.id === selectedEntryForModal.category)?.name}
+                      </span>
+                    </DialogDescription>
+                  </div>
+                   <DialogClose asChild>
+                      <Button variant="ghost" size="icon" className="ml-auto">
+                        <X className="h-4 w-4" />
+                        <span className="sr-only">Close</span>
+                      </Button>
+                    </DialogClose>
+                </div>
+              </DialogHeader>
+              <div className="prose prose-sm dark:prose-invert max-h-[60vh] overflow-y-auto p-1 pr-4"> {/* Added padding and scroll */}
+                {/* Render content preserving whitespace */}
+                <p style={{ whiteSpace: 'pre-wrap' }}>
+                  {selectedEntryForModal.content}
+                </p>
+              </div>
+              <DialogFooter className="sm:justify-start">
+                <DialogClose asChild>
+                  <Button type="button" variant="secondary">
+                    Back to Entries
+                  </Button>
+                </DialogClose>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

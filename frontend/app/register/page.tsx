@@ -55,7 +55,8 @@ export default function RegisterPage() {
         passwordConfirm: values.confirmPassword // Send confirmPassword as passwordConfirm
       };
 
-      const response = await fetch("http://localhost:5000/api/v1/auth/register", {
+      const backendBaseUrl = "https://vent-4tfv.onrender.com"; // Use the correct base URL
+      const response = await fetch(`${backendBaseUrl}/api/v1/auth/register`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

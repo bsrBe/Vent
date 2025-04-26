@@ -40,7 +40,8 @@ const handleTokenRefresh = async (): Promise<string | null> => {
   }
 
   try {
-    const response = await fetch("http://localhost:5000/api/v1/auth/refresh", {
+    const backendBaseUrl = "https://vent-4tfv.onrender.com"; // Use the correct base URL
+    const response = await fetch(`${backendBaseUrl}/api/v1/auth/refresh`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

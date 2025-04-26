@@ -97,7 +97,7 @@ export const fetchAuthenticated = async <T = any>(
     headers.set("Content-Type", "application/json")
   } // <<< Added missing closing brace
 
-  const backendBaseUrl = "http://localhost:5000"; // Define the backend base URL
+  const backendBaseUrl = "https://vent-4tfv.onrender.com"; // Define the backend base URL
   const fullUrl = url.startsWith("http") ? url : `${backendBaseUrl}${url}`; // Prepend base URL if url is relative
 
   try {

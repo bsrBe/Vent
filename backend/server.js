@@ -30,8 +30,8 @@ app.use(helmet());
 
 // Enable CORS - Adjust options as needed for production
 app.use(cors({
-    // origin: process.env.FRONTEND_URL || 'http://localhost:3000', // Allow frontend origin
-    // credentials: true // If using cookies or authorization headers
+    origin: 'https://vent-git-main-bsrbes-projects.vercel.app', // Allow specific frontend origin
+    credentials: true // Allow cookies/authorization headers
 }));
 
 // Development logging

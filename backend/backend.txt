@@ -1,0 +1,2533 @@
+### Comfy Journal Database Models and Controllers
+
+I'll create comprehensive database models and controllers for the Comfy Journal application using Prisma ORM with TypeScript, which integrates well with Next.js.
+
+## Database Models (Prisma Schema)
+
+```plaintext
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String         @id @default(uuid())
+  name           String
+  email          String         @unique
+  password       String
+  profileImageUrl String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  journalEntries JournalEntry[]
+  moods          Mood[]
+  refreshTokens  RefreshToken[]
+
+  @@map("users")
+}
+
+model JournalEntry {
+  id        String   @id @default(uuid())
+  title     String
+  content   String
+  category  Category
+  userId    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mood      Mood?
+
+  @@index([userId])
+  @@index([category])
+  @@index([createdAt])
+  @@map("journal_entries")
+}
+
+model MoodType {
+  id          String  @id @default(uuid())
+  name        String  @unique
+  emoji       String
+  colorCode   String
+  description String?
+  moods       Mood[]
+
+  @@map("mood_types")
+}
+
+model Mood {
+  id            String       @id @default(uuid())
+  moodTypeId    String
+  userId        String
+  intensity     Int          @default(3)
+  date          DateTime     @db.Date
+  timeOfDay     DateTime?    @db.Time()
+  notes         String?
+  journalEntryId String?     @unique
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  
+  moodType      MoodType     @relation(fields: [moodTypeId], references: [id])
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  journalEntry  JournalEntry? @relation(fields: [journalEntryId], references: [id])
+
+  @@index([userId])
+  @@index([moodTypeId])
+  @@index([date])
+  @@map("moods")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+enum Category {
+  FAMILY
+  RELATIONSHIP
+  MYSELF
+  WORK
+  OTHER
+}
+```
+
+## Controllers
+
+### 1. Auth Controller
+
+```typescript
+import { Request, Response } from 'express';
+import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
+import { v4 as uuidv4 } from 'uuid';
+import { addDays } from 'date-fns';
+import { sendEmail } from '../utils/email';
+
+const prisma = new PrismaClient();
+
+export class AuthController {
+  // Register a new user
+  async register(req: Request, res: Response): Promise<void> {
+    try {
+      const { name, email, password } = req.body;
+
+      // Check if user already exists
+      const existingUser = await prisma.user.findUnique({
+        where: { email },
+      });
+
+      if (existingUser) {
+        res.status(400).json({
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid input data',
+          details: { email: 'Email is already in use' },
+        });
+        return;
+      }
+
+      // Hash password
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      // Create user
+      const user = await prisma.user.create({
+        data: {
+          name,
+          email,
+          password: hashedPassword,
+        },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          profileImageUrl: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+      // Generate tokens
+      const { accessToken, refreshToken } = this.generateTokens(user.id);
+
+      // Save refresh token
+      await prisma.refreshToken.create({
+        data: {
+          token: refreshToken,
+          userId: user.id,
+          expiresAt: addDays(new Date(), 7),
+        },
+      });
+
+      res.status(201).json({
+        accessToken,
+        refreshToken,
+        user,
+      });
+    } catch (error) {
+      console.error('Registration error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred during registration',
+      });
+    }
+  }
+
+  // Login user
+  async login(req: Request, res: Response): Promise<void> {
+    try {
+      const { email, password } = req.body;
+
+      // Find user
+      const user = await prisma.user.findUnique({
+        where: { email },
+      });
+
+      if (!user) {
+        res.status(401).json({
+          code: 'INVALID_CREDENTIALS',
+          message: 'Invalid email or password',
+        });
+        return;
+      }
+
+      // Verify password
+      const isPasswordValid = await bcrypt.compare(password, user.password);
+      if (!isPasswordValid) {
+        res.status(401).json({
+          code: 'INVALID_CREDENTIALS',
+          message: 'Invalid email or password',
+        });
+        return;
+      }
+
+      // Generate tokens
+      const { accessToken, refreshToken } = this.generateTokens(user.id);
+
+      // Save refresh token
+      await prisma.refreshToken.create({
+        data: {
+          token: refreshToken,
+          userId: user.id,
+          expiresAt: addDays(new Date(), 7),
+        },
+      });
+
+      // Return user without password
+      const { password: _, ...userWithoutPassword } = user;
+
+      res.status(200).json({
+        accessToken,
+        refreshToken,
+        user: userWithoutPassword,
+      });
+    } catch (error) {
+      console.error('Login error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred during login',
+      });
+    }
+  }
+
+  // Refresh token
+  async refresh(req: Request, res: Response): Promise<void> {
+    try {
+      const { refreshToken } = req.body;
+
+      // Find token in database
+      const tokenRecord = await prisma.refreshToken.findUnique({
+        where: { token: refreshToken },
+        include: { user: true },
+      });
+
+      if (!tokenRecord || tokenRecord.expiresAt < new Date()) {
+        res.status(401).json({
+          code: 'INVALID_TOKEN',
+          message: 'Invalid or expired refresh token',
+        });
+        return;
+      }
+
+      // Generate new tokens
+      const { accessToken: newAccessToken, refreshToken: newRefreshToken } = 
+        this.generateTokens(tokenRecord.userId);
+
+      // Delete old token and save new one
+      await prisma.refreshToken.delete({
+        where: { id: tokenRecord.id },
+      });
+
+      await prisma.refreshToken.create({
+        data: {
+          token: newRefreshToken,
+          userId: tokenRecord.userId,
+          expiresAt: addDays(new Date(), 7),
+        },
+      });
+
+      res.status(200).json({
+        accessToken: newAccessToken,
+        refreshToken: newRefreshToken,
+      });
+    } catch (error) {
+      console.error('Token refresh error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred during token refresh',
+      });
+    }
+  }
+
+  // Logout
+  async logout(req: Request, res: Response): Promise<void> {
+    try {
+      const { refreshToken } = req.body;
+
+      // Delete refresh token
+      if (refreshToken) {
+        await prisma.refreshToken.deleteMany({
+          where: { token: refreshToken },
+        });
+      }
+
+      res.status(200).json({ message: 'Logout successful' });
+    } catch (error) {
+      console.error('Logout error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred during logout',
+      });
+    }
+  }
+
+  // Forgot password
+  async forgotPassword(req: Request, res: Response): Promise<void> {
+    try {
+      const { email } = req.body;
+
+      // Find user
+      const user = await prisma.user.findUnique({
+        where: { email },
+      });
+
+      if (!user) {
+        // Don't reveal that the user doesn't exist
+        res.status(200).json({ message: 'Password reset email sent' });
+        return;
+      }
+
+      // Generate reset token
+      const resetToken = uuidv4();
+      const resetTokenExpiry = addDays(new Date(), 1);
+
+      // Store token in database (you might want to create a separate table for this)
+      // For simplicity, we'll use a JWT with short expiry
+      const token = jwt.sign(
+        { userId: user.id, type: 'password_reset' },
+        process.env.JWT_SECRET!,
+        { expiresIn: '24h' }
+      );
+
+      // Send email with reset link
+      const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
+      await sendEmail({
+        to: user.email,
+        subject: 'Password Reset Request',
+        text: `Please use the following link to reset your password: ${resetLink}`,
+        html: `<p>Please use the following link to reset your password:</p><p><a href="${resetLink}">Reset Password</a></p>`,
+      });
+
+      res.status(200).json({ message: 'Password reset email sent' });
+    } catch (error) {
+      console.error('Forgot password error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred during password reset request',
+      });
+    }
+  }
+
+  // Reset password
+  async resetPassword(req: Request, res: Response): Promise<void> {
+    try {
+      const { token, password, confirmPassword } = req.body;
+
+      // Verify passwords match
+      if (password !== confirmPassword) {
+        res.status(400).json({
+          code: 'VALIDATION_ERROR',
+          message: 'Passwords do not match',
+        });
+        return;
+      }
+
+      // Verify token
+      let decoded;
+      try {
+        decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: string; type: string };
+      } catch (error) {
+        res.status(400).json({
+          code: 'INVALID_TOKEN',
+          message: 'Invalid or expired token',
+        });
+        return;
+      }
+
+      if (decoded.type !== 'password_reset') {
+        res.status(400).json({
+          code: 'INVALID_TOKEN',
+          message: 'Invalid token type',
+        });
+        return;
+      }
+
+      // Find user
+      const user = await prisma.user.findUnique({
+        where: { id: decoded.userId },
+      });
+
+      if (!user) {
+        res.status(400).json({
+          code: 'INVALID_TOKEN',
+          message: 'Invalid token',
+        });
+        return;
+      }
+
+      // Hash new password
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      // Update user password
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { password: hashedPassword },
+      });
+
+      // Invalidate all refresh tokens for this user
+      await prisma.refreshToken.deleteMany({
+        where: { userId: user.id },
+      });
+
+      res.status(200).json({ message: 'Password reset successful' });
+    } catch (error) {
+      console.error('Reset password error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred during password reset',
+      });
+    }
+  }
+
+  // Get current user
+  async me(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          profileImageUrl: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+      if (!user) {
+        res.status(404).json({
+          code: 'USER_NOT_FOUND',
+          message: 'User not found',
+        });
+        return;
+      }
+
+      res.status(200).json(user);
+    } catch (error) {
+      console.error('Get current user error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while retrieving user information',
+      });
+    }
+  }
+
+  // Helper method to generate tokens
+  private generateTokens(userId: string): { accessToken: string; refreshToken: string } {
+    const accessToken = jwt.sign(
+      { userId, type: 'access' },
+      process.env.JWT_SECRET!,
+      { expiresIn: '15m' }
+    );
+
+    const refreshToken = jwt.sign(
+      { userId, type: 'refresh' },
+      process.env.JWT_SECRET!,
+      { expiresIn: '7d' }
+    );
+
+    return { accessToken, refreshToken };
+  }
+}
+```
+
+### 2. Journal Entry Controller
+
+```typescript
+import { Request, Response } from 'express';
+import { PrismaClient, Category } from '@prisma/client';
+
+const prisma = new PrismaClient();
+
+export class JournalEntryController {
+  // Get all journal entries with pagination and filtering
+  async getEntries(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 20;
+      const skip = (page - 1) * limit;
+      
+      const category = req.query.category as string;
+      const moodId = req.query.moodId as string;
+      const fromDate = req.query.fromDate ? new Date(req.query.fromDate as string) : undefined;
+      const toDate = req.query.toDate ? new Date(req.query.toDate as string) : undefined;
+
+      // Build filter conditions
+      const where: any = {
+        userId,
+        deletedAt: null,
+      };
+
+      if (category) {
+        where.category = category.toUpperCase() as Category;
+      }
+
+      if (moodId) {
+        where.mood = {
+          moodTypeId: moodId,
+        };
+      }
+
+      if (fromDate || toDate) {
+        where.createdAt = {};
+        if (fromDate) {
+          where.createdAt.gte = fromDate;
+        }
+        if (toDate) {
+          where.createdAt.lte = toDate;
+        }
+      }
+
+      // Get entries
+      const [entries, total] = await Promise.all([
+        prisma.journalEntry.findMany({
+          where,
+          include: {
+            mood: {
+              include: {
+                moodType: true,
+              },
+            },
+          },
+          orderBy: {
+            createdAt: 'desc',
+          },
+          skip,
+          take: limit,
+        }),
+        prisma.journalEntry.count({ where }),
+      ]);
+
+      const totalPages = Math.ceil(total / limit);
+
+      res.status(200).json({
+        data: entries,
+        total,
+        page,
+        limit,
+        totalPages,
+      });
+    } catch (error) {
+      console.error('Get entries error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while retrieving journal entries',
+      });
+    }
+  }
+
+  // Create a new journal entry
+  async createEntry(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+      const { title, content, category, moodId } = req.body;
+
+      // Validate category
+      const validCategory = Object.values(Category).includes(category.toUpperCase() as Category);
+      if (!validCategory) {
+        res.status(400).json({
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid category',
+        });
+        return;
+      }
+
+      // Create entry transaction
+      const entry = await prisma.$transaction(async (prisma) => {
+        // Create journal entry
+        const journalEntry = await prisma.journalEntry.create({
+          data: {
+            title,
+            content,
+            category: category.toUpperCase() as Category,
+            userId,
+          },
+        });
+
+        // If mood is provided, create mood record
+        if (moodId) {
+          await prisma.mood.create({
+            data: {
+              moodTypeId: moodId,
+              userId,
+              date: new Date(),
+              journalEntryId: journalEntry.id,
+            },
+          });
+        }
+
+        // Return entry with mood
+        return prisma.journalEntry.findUnique({
+          where: { id: journalEntry.id },
+          include: {
+            mood: {
+              include: {
+                moodType: true,
+              },
+            },
+          },
+        });
+      });
+
+      res.status(201).json(entry);
+    } catch (error) {
+      console.error('Create entry error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while creating the journal entry',
+      });
+    }
+  }
+
+  // Get a specific journal entry
+  async getEntry(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+      const entryId = req.params.id;
+
+      const entry = await prisma.journalEntry.findFirst({
+        where: {
+          id: entryId,
+          userId,
+          deletedAt: null,
+        },
+        include: {
+          mood: {
+            include: {
+              moodType: true,
+            },
+          },
+        },
+      });
+
+      if (!entry) {
+        res.status(404).json({
+          code: 'ENTRY_NOT_FOUND',
+          message: 'Journal entry not found',
+        });
+        return;
+      }
+
+      res.status(200).json(entry);
+    } catch (error) {
+      console.error('Get entry error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while retrieving the journal entry',
+      });
+    }
+  }
+
+  // Update a journal entry
+  async updateEntry(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+      const entryId = req.params.id;
+      const { title, content, category, moodId } = req.body;
+
+      // Find entry
+      const existingEntry = await prisma.journalEntry.findFirst({
+        where: {
+          id: entryId,
+          userId,
+          deletedAt: null,
+        },
+        include: {
+          mood: true,
+        },
+      });
+
+      if (!existingEntry) {
+        res.status(404).json({
+          code: 'ENTRY_NOT_FOUND',
+          message: 'Journal entry not found',
+        });
+        return;
+      }
+
+      // Validate category if provided
+      if (category) {
+        const validCategory = Object.values(Category).includes(category.toUpperCase() as Category);
+        if (!validCategory) {
+          res.status(400).json({
+            code: 'VALIDATION_ERROR',
+            message: 'Invalid category',
+          });
+          return;
+        }
+      }
+
+      // Update entry transaction
+      const updatedEntry = await prisma.$transaction(async (prisma) => {
+        // Update journal entry
+        const journalEntry = await prisma.journalEntry.update({
+          where: { id: entryId },
+          data: {
+            title: title !== undefined ? title : undefined,
+            content: content !== undefined ? content : undefined,
+            category: category !== undefined ? (category.toUpperCase() as Category) : undefined,
+          },
+        });
+
+        // Update mood if provided
+        if (moodId !== undefined) {
+          if (existingEntry.mood) {
+            // Update existing mood
+            await prisma.mood.update({
+              where: { id: existingEntry.mood.id },
+              data: {
+                moodTypeId: moodId,
+              },
+            });
+          } else if (moodId) {
+            // Create new mood
+            await prisma.mood.create({
+              data: {
+                moodTypeId: moodId,
+                userId,
+                date: new Date(),
+                journalEntryId: journalEntry.id,
+              },
+            });
+          }
+        }
+
+        // Return updated entry with mood
+        return prisma.journalEntry.findUnique({
+          where: { id: journalEntry.id },
+          include: {
+            mood: {
+              include: {
+                moodType: true,
+              },
+            },
+          },
+        });
+      });
+
+      res.status(200).json(updatedEntry);
+    } catch (error) {
+      console.error('Update entry error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while updating the journal entry',
+      });
+    }
+  }
+
+  // Delete a journal entry (soft delete)
+  async deleteEntry(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+      const entryId = req.params.id;
+
+      // Find entry
+      const existingEntry = await prisma.journalEntry.findFirst({
+        where: {
+          id: entryId,
+          userId,
+          deletedAt: null,
+        },
+      });
+
+      if (!existingEntry) {
+        res.status(404).json({
+          code: 'ENTRY_NOT_FOUND',
+          message: 'Journal entry not found',
+        });
+        return;
+      }
+
+      // Soft delete entry
+      await prisma.journalEntry.update({
+        where: { id: entryId },
+        data: {
+          deletedAt: new Date(),
+        },
+      });
+
+      res.status(200).json({ message: 'Journal entry deleted successfully' });
+    } catch (error) {
+      console.error('Delete entry error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while deleting the journal entry',
+      });
+    }
+  }
+}
+```
+
+### 3. Mood Controller
+
+```typescript
+import { Request, Response } from 'express';
+import { PrismaClient } from '@prisma/client';
+import { subDays, subMonths, startOfDay, endOfDay, format } from 'date-fns';
+
+const prisma = new PrismaClient();
+
+export class MoodController {
+  // Get all mood types
+  async getMoodTypes(req: Request, res: Response): Promise<void> {
+    try {
+      const moodTypes = await prisma.moodType.findMany();
+      res.status(200).json(moodTypes);
+    } catch (error) {
+      console.error('Get mood types error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while retrieving mood types',
+      });
+    }
+  }
+
+  // Get user moods with date range filtering
+  async getMoods(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 20;
+      const skip = (page - 1) * limit;
+      
+      const fromDate = req.query.fromDate ? new Date(req.query.fromDate as string) : undefined;
+      const toDate = req.query.toDate ? new Date(req.query.toDate as string) : undefined;
+
+      // Build filter conditions
+      const where: any = { userId };
+
+      if (fromDate || toDate) {
+        where.date = {};
+        if (fromDate) {
+          where.date.gte = fromDate;
+        }
+        if (toDate) {
+          where.date.lte = toDate;
+        }
+      }
+
+      // Get moods
+      const [moods, total] = await Promise.all([
+        prisma.mood.findMany({
+          where,
+          include: {
+            moodType: true,
+            journalEntry: {
+              select: {
+                id: true,
+                title: true,
+              },
+            },
+          },
+          orderBy: {
+            date: 'desc',
+          },
+          skip,
+          take: limit,
+        }),
+        prisma.mood.count({ where }),
+      ]);
+
+      const totalPages = Math.ceil(total / limit);
+
+      res.status(200).json({
+        data: moods,
+        total,
+        page,
+        limit,
+        totalPages,
+      });
+    } catch (error) {
+      console.error('Get moods error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while retrieving moods',
+      });
+    }
+  }
+
+  // Record a new mood
+  async createMood(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+      const { moodTypeId, intensity, date, timeOfDay, notes, journalEntryId } = req.body;
+
+      // Validate mood type
+      const moodType = await prisma.moodType.findUnique({
+        where: { id: moodTypeId },
+      });
+
+      if (!moodType) {
+        res.status(400).json({
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid mood type',
+        });
+        return;
+      }
+
+      // Validate journal entry if provided
+      if (journalEntryId) {
+        const journalEntry = await prisma.journalEntry.findFirst({
+          where: {
+            id: journalEntryId,
+            userId,
+            deletedAt: null,
+          },
+        });
+
+        if (!journalEntry) {
+          res.status(400).json({
+            code: 'VALIDATION_ERROR',
+            message: 'Invalid journal entry',
+          });
+          return;
+        }
+      }
+
+      // Create mood
+      const mood = await prisma.mood.create({
+        data: {
+          moodTypeId,
+          userId,
+          intensity: intensity || 3,
+          date: date ? new Date(date) : new Date(),
+          timeOfDay: timeOfDay ? new Date(`1970-01-01T${timeOfDay}`) : undefined,
+          notes,
+          journalEntryId,
+        },
+        include: {
+          moodType: true,
+          journalEntry: {
+            select: {
+              id: true,
+              title: true,
+            },
+          },
+        },
+      });
+
+      res.status(201).json(mood);
+    } catch (error) {
+      console.error('Create mood error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while recording the mood',
+      });
+    }
+  }
+
+  // Get mood statistics
+  async getMoodStats(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+      const period = req.query.period as string || 'month';
+      
+      let fromDate: Date;
+      let toDate = new Date();
+      
+      // Determine date range based on period
+      switch (period) {
+        case 'week':
+          fromDate = subDays(toDate, 7);
+          break;
+        case '3months':
+          fromDate = subMonths(toDate, 3);
+          break;
+        case 'custom':
+          fromDate = req.query.fromDate ? new Date(req.query.fromDate as string) : subMonths(toDate, 1);
+          toDate = req.query.toDate ? new Date(req.query.toDate as string) : toDate;
+          break;
+        case 'month':
+        default:
+          fromDate = subMonths(toDate, 1);
+          break;
+      }
+
+      // Get moods in date range
+      const moods = await prisma.mood.findMany({
+        where: {
+          userId,
+          date: {
+            gte: startOfDay(fromDate),
+            lte: endOfDay(toDate),
+          },
+        },
+        include: {
+          moodType: true,
+        },
+        orderBy: {
+          date: 'asc',
+        },
+      });
+
+      // Calculate mood counts
+      const moodCounts: { [key: string]: { moodType: any; count: number } } = {};
+      
+      moods.forEach(mood => {
+        const moodTypeId = mood.moodType.id;
+        if (!moodCounts[moodTypeId]) {
+          moodCounts[moodTypeId] = {
+            moodType: mood.moodType,
+            count: 0,
+          };
+        }
+        moodCounts[moodTypeId].count++;
+      });
+
+      // Find most frequent mood
+      let mostFrequentMood = null;
+      let maxCount = 0;
+      
+      Object.values(moodCounts).forEach(item => {
+        if (item.count > maxCount) {
+          maxCount = item.count;
+          mostFrequentMood = item.moodType;
+        }
+      });
+
+      res.status(200).json({
+        mostFrequentMood,
+        moodCounts: Object.values(moodCounts),
+        dateRange: {
+          from: fromDate,
+          to: toDate,
+        },
+      });
+    } catch (error) {
+      console.error('Get mood stats error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while retrieving mood statistics',
+      });
+    }
+  }
+
+  // Get calendar view of moods
+  async getMoodCalendar(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+      const year = parseInt(req.query.year as string) || new Date().getFullYear();
+      const month = parseInt(req.query.month as string) || new Date().getMonth() + 1;
+      
+      // Calculate start and end dates for the requested month
+      const startDate = new Date(year, month - 1, 1);
+      const endDate = new Date(year, month, 0); // Last day of the month
+      
+      // Get moods for the month
+      const moods = await prisma.mood.findMany({
+        where: {
+          userId,
+          date: {
+            gte: startDate,
+            lte: endDate,
+          },
+        },
+        include: {
+          moodType: true,
+        },
+        orderBy: {
+          date: 'asc',
+        },
+      });
+      
+      // Format calendar data
+      const calendarData = moods.map(mood => ({
+        date: format(mood.date, 'yyyy-MM-dd'),
+        mood: mood.moodType,
+      }));
+      
+      res.status(200).json(calendarData);
+    } catch (error) {
+      console.error('Get mood calendar error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while retrieving mood calendar data',
+      });
+    }
+  }
+
+  // Get mood insights and patterns
+  async getMoodInsights(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+      const fromDate = req.query.fromDate ? new Date(req.query.fromDate as string) : subMonths(new Date(), 3);
+      const toDate = req.query.toDate ? new Date(req.query.toDate as string) : new Date();
+      const insightType = req.query.insightType as string;
+      
+      // Get moods in date range
+      const moods = await prisma.mood.findMany({
+        where: {
+          userId,
+          date: {
+            gte: startOfDay(fromDate),
+            lte: endOfDay(toDate),
+          },
+        },
+        include: {
+          moodType: true,
+          journalEntry: {
+            select: {
+              id: true,
+              title: true,
+              category: true,
+              content: true,
+            },
+          },
+        },
+        orderBy: {
+          date: 'asc',
+        },
+      });
+      
+      // Generate insights based on type
+      let insights = [];
+      
+      if (!insightType || insightType === 'trend') {
+        // Analyze mood trends over time
+        insights.push({
+          id: 'trend-1',
+          insightType: 'trend',
+          insightData: this.analyzeMoodTrends(moods),
+          dateRangeStart: fromDate,
+          dateRangeEnd: toDate,
+          createdAt: new Date(),
+        });
+      }
+      
+      if (!insightType || insightType === 'correlation') {
+        // Analyze correlations between moods and categories
+        insights.push({
+          id: 'correlation-1',
+          insightType: 'correlation',
+          insightData: this.analyzeMoodCorrelations(moods),
+          dateRangeStart: fromDate,
+          dateRangeEnd: toDate,
+          createdAt: new Date(),
+        });
+      }
+      
+      if (!insightType || insightType === 'pattern') {
+        // Analyze patterns in mood fluctuations
+        insights.push({
+          id: 'pattern-1',
+          insightType: 'pattern',
+          insightData: this.analyzeMoodPatterns(moods),
+          dateRangeStart: fromDate,
+          dateRangeEnd: toDate,
+          createdAt: new Date(),
+        });
+      }
+      
+      if (!insightType || insightType === 'suggestion') {
+        // Generate suggestions based on mood data
+        insights.push({
+          id: 'suggestion-1',
+          insightType: 'suggestion',
+          insightData: this.generateMoodSuggestions(moods),
+          dateRangeStart: fromDate,
+          dateRangeEnd: toDate,
+          createdAt: new Date(),
+        });
+      }
+      
+      res.status(200).json(insights);
+    } catch (error) {
+      console.error('Get mood insights error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while retrieving mood insights',
+      });
+    }
+  }
+  
+  // Helper methods for mood analysis
+  private analyzeMoodTrends(moods: any[]): any {
+    // Group moods by date and calculate average mood
+    const moodsByDate: { [key: string]: { count: number; moodTypes: { [key: string]: number } } } = {};
+    
+    moods.forEach(mood => {
+      const dateKey = format(mood.date, 'yyyy-MM-dd');
+      if (!moodsByDate[dateKey]) {
+        moodsByDate[dateKey] = { count: 0, moodTypes: {} };
+      }
+      
+      moodsByDate[dateKey].count++;
+      
+      if (!moodsByDate[dateKey].moodTypes[mood.moodType.name]) {
+        moodsByDate[dateKey].moodTypes[mood.moodType.name] = 0;
+      }
+      moodsByDate[dateKey].moodTypes[mood.moodType.name]++;
+    });
+    
+    // Convert to array and find dominant mood for each day
+    const trendData = Object.entries(moodsByDate).map(([date, data]) => {
+      let dominantMood = '';
+      let maxCount = 0;
+      
+      Object.entries(data.moodTypes).forEach(([mood, count]) => {
+        if (count > maxCount) {
+          maxCount = count as number;
+          dominantMood = mood;
+        }
+      });
+      
+      return {
+        date,
+        dominantMood,
+        moodCounts: data.moodTypes,
+      };
+    });
+    
+    return {
+      trendData,
+      summary: this.generateTrendSummary(trendData),
+    };
+  }
+  
+  private analyzeMoodCorrelations(moods: any[]): any {
+    // Analyze correlations between moods and journal categories
+    const categoryMoodCorrelation: { [key: string]: { [key: string]: number } } = {};
+    
+    moods.forEach(mood => {
+      if (mood.journalEntry) {
+        const category = mood.journalEntry.category;
+        const moodName = mood.moodType.name;
+        
+        if (!categoryMoodCorrelation[category]) {
+          categoryMoodCorrelation[category] = {};
+        }
+        
+        if (!categoryMoodCorrelation[category][moodName]) {
+          categoryMoodCorrelation[category][moodName] = 0;
+        }
+        
+        categoryMoodCorrelation[category][moodName]++;
+      }
+    });
+    
+    // Find strongest correlations
+    const correlations = Object.entries(categoryMoodCorrelation).map(([category, moodCounts]) => {
+      let dominantMood = '';
+      let maxCount = 0;
+      
+      Object.entries(moodCounts).forEach(([mood, count]) => {
+        if (count > maxCount) {
+          maxCount = count as number;
+          dominantMood = mood;
+        }
+      });
+      
+      return {
+        category,
+        dominantMood,
+        strength: maxCount,
+        moodCounts,
+      };
+    });
+    
+    return {
+      correlations,
+      summary: this.generateCorrelationSummary(correlations),
+    };
+  }
+  
+  private analyzeMoodPatterns(moods: any[]): any {
+    // Look for patterns in mood fluctuations
+    const moodSequence = moods.map(mood => ({
+      date: format(mood.date, 'yyyy-MM-dd'),
+      mood: mood.moodType.name,
+      intensity: mood.intensity,
+    }));
+    
+    // Identify mood swings and stable periods
+    const patterns = {
+      swings: this.identifyMoodSwings(moodSequence),
+      stablePeriods: this.identifyStablePeriods(moodSequence),
+    };
+    
+    return {
+      patterns,
+      summary: this.generatePatternSummary(patterns),
+    };
+  }
+  
+  private generateMoodSuggestions(moods: any[]): any {
+    // Generate suggestions based on mood data
+    const suggestions = [];
+    
+    // Find most common positive mood triggers
+    const positiveEntries = moods.filter(mood => 
+      ['happy', 'calm'].includes(mood.moodType.name.toLowerCase()) && 
+      mood.journalEntry
+    );
+    
+    if (positiveEntries.length > 0) {
+      const positiveTopics = this.extractCommonTopics(positiveEntries);
+      suggestions.push({
+        type: 'positive_activities',
+        message: 'Activities that may improve your mood',
+        topics: positiveTopics,
+      });
+    }
+    
+    // Find potential mood improvement strategies
+    const negativeEntries = moods.filter(mood => 
+      ['sad', 'angry', 'anxious'].includes(mood.moodType.name.toLowerCase())
+    );
+    
+    if (negativeEntries.length > 0) {
+      suggestions.push({
+        type: 'coping_strategies',
+        message: 'Strategies that might help during difficult moments',
+        strategies: [
+          'Practice mindful breathing for 5 minutes',
+          'Take a short walk outside',
+          'Write down your thoughts in your journal',
+          'Connect with a supportive friend or family member',
+          'Engage in a creative activity you enjoy',
+        ],
+      });
+    }
+    
+    return {
+      suggestions,
+      summary: 'Based on your mood patterns, we\'ve generated personalized suggestions that may help improve your emotional well-being.',
+    };
+  }
+  
+  private generateTrendSummary(trendData: any[]): string {
+    // Simple summary of mood trends
+    if (trendData.length === 0) return 'Not enough data to analyze mood trends.';
+    
+    const moodCounts: { [key: string]: number } = {};
+    trendData.forEach(day => {
+      if (!moodCounts[day.dominantMood]) {
+        moodCounts[day.dominantMood] = 0;
+      }
+      moodCounts[day.dominantMood]++;
+    });
+    
+    let dominantMood = '';
+    let maxCount = 0;
+    
+    Object.entries(moodCounts).forEach(([mood, count]) => {
+      if (count > maxCount) {
+        maxCount = count as number;
+        dominantMood = mood;
+      }
+    });
+    
+    const percentage = Math.round((maxCount / trendData.length) * 100);
+    
+    return `Your most frequent mood was ${dominantMood} (${percentage}% of days). Understanding your mood patterns can help you identify factors that influence your emotional well-being.`;
+  }
+  
+  private generateCorrelationSummary(correlations: any[]): string {
+    if (correlations.length === 0) return 'Not enough data to analyze correlations.';
+    
+    // Find strongest correlation
+    let strongestCorrelation = correlations[0];
+    correlations.forEach(corr => {
+      if (corr.strength > strongestCorrelation.strength) {
+        strongestCorrelation = corr;
+      }
+    });
+    
+    return `There appears to be a connection between ${strongestCorrelation.category.toLowerCase()} topics and feeling ${strongestCorrelation.dominantMood.toLowerCase()}. Being aware of these connections can help you understand your emotional responses better.`;
+  }
+  
+  private generatePatternSummary(patterns: any): string {
+    if (patterns.swings.length === 0 && patterns.stablePeriods.length === 0) {
+      return 'Not enough data to analyze mood patterns.';
+    }
+    
+    if (patterns.swings.length > patterns.stablePeriods.length) {
+      return 'Your mood shows some variability. This is normal, but being aware of what triggers changes in your mood can help you develop effective coping strategies.';
+    } else {
+      return 'Your mood has been relatively stable. Maintaining emotional stability is beneficial for overall well-being.';
+    }
+  }
+  
+  private identifyMoodSwings(moodSequence: any[]): any[] {
+    if (moodSequence.length < 3) return [];
+    
+    const swings = [];
+    for (let i = 1; i < moodSequence.length - 1; i++) {
+      const prev = moodSequence[i-1];
+      const current = moodSequence[i];
+      const next = moodSequence[i+1];
+      
+      // Check for significant mood changes
+      if (
+        (this.getMoodValue(current.mood) - this.getMoodValue(prev.mood) >= 2) ||
+        (this.getMoodValue(prev.mood) - this.getMoodValue(current.mood) >= 2) ||
+        (this.getMoodValue(current.mood) - this.getMoodValue(next.mood) >= 2) ||
+        (this.getMoodValue(next.mood) - this.getMoodValue(current.mood) >= 2)
+      ) {
+        swings.push({
+          date: current.date,
+          from: prev.mood,
+          to: current.mood,
+          next: next.mood,
+        });
+      }
+    }
+    
+    return swings;
+  }
+  
+  private identifyStablePeriods(moodSequence: any[]): any[] {
+    if (moodSequence.length < 3) return [];
+    
+    const stablePeriods = [];
+    let currentPeriod = {
+      mood: moodSequence[0].mood,
+      startDate: moodSequence[0].date,
+      endDate: moodSequence[0].date,
+      duration: 1,
+    };
+    
+    for (let i = 1; i < moodSequence.length; i++) {
+      if (moodSequence[i].mood === currentPeriod.mood) {
+        // Continue the stable period
+        currentPeriod.endDate = moodSequence[i].date;
+        currentPeriod.duration++;
+      } else {
+        // End the current stable period if it's at least 3 days
+        if (currentPeriod.duration >= 3) {
+          stablePeriods.push({...currentPeriod});
+        }
+        
+        // Start a new period
+        currentPeriod = {
+          mood: moodSequence[i].mood,
+          startDate: moodSequence[i].date,
+          endDate: moodSequence[i].date,
+          duration: 1,
+        };
+      }
+    }
+    
+    // Add the last period if it's stable
+    if (currentPeriod.duration >= 3) {
+      stablePeriods.push(currentPeriod);
+    }
+    
+    return stablePeriods;
+  }
+  
+  private getMoodValue(mood: string): number {
+    // Assign numerical values to moods for comparison
+    const moodValues: { [key: string]: number } = {
+      'happy': 5,
+      'calm': 4,
+      'neutral': 3,
+      'anxious': 2,
+      'sad': 1,
+      'angry': 0,
+    };
+    
+    return moodValues[mood.toLowerCase()] || 3;
+  }
+  
+  private extractCommonTopics(entries: any[]): string[] {
+    // Simple keyword extraction from journal entries
+    const keywords: { [key: string]: number } = {};
+    
+    entries.forEach(entry => {
+      if (entry.journalEntry && entry.journalEntry.content) {
+        const content = entry.journalEntry.content.toLowerCase();
+        
+        // List of common positive activities/topics
+        const positiveTopics = [
+          'exercise', 'walk', 'nature', 'friend', 'family', 'music',
+          'read', 'book', 'hobby', 'art', 'create', 'meditate',
+          'yoga', 'sleep', 'rest', 'accomplish', 'achieve', 'proud',
+          'grateful', 'thankful', 'appreciate', 'enjoy', 'love',
+        ];
+        
+        positiveTopics.forEach(topic => {
+          if (content.includes(topic)) {
+            if (!keywords[topic]) {
+              keywords[topic] = 0;
+            }
+            keywords[topic]++;
+          }
+        });
+      }
+    });
+    
+    // Return top 5 topics
+    return Object.entries(keywords)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([topic]) => topic);
+  }
+}
+```
+
+### 4. Search Controller
+
+```typescript
+import { Request, Response } from 'express';
+import { PrismaClient, Category } from '@prisma/client';
+
+const prisma = new PrismaClient();
+
+export class SearchController {
+  // Search journal entries
+  async searchEntries(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+      const query = req.query.query as string;
+      const categories = req.query.categories as string[] || [];
+      const moods = req.query.moods as string[] || [];
+      const fromDate = req.query.fromDate ? new Date(req.query.fromDate as string) : undefined;
+      const toDate = req.query.toDate ? new Date(req.query.toDate as string) : undefined;
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 20;
+      const skip = (page - 1) * limit;
+
+      // Build search conditions
+      const where: any = {
+        userId,
+        deletedAt: null,
+      };
+
+      // Text search
+      if (query) {
+        where.OR = [
+          { title: { contains: query, mode: 'insensitive' } },
+          { content: { contains: query, mode: 'insensitive' } },
+        ];
+      }
+
+      // Category filter
+      if (categories.length > 0) {
+        where.category = {
+          in: categories.map(cat => cat.toUpperCase() as Category),
+        };
+      }
+
+      // Mood filter
+      if (moods.length > 0) {
+        where.mood = {
+          moodTypeId: {
+            in: moods,
+          },
+        };
+      }
+
+      // Date range filter
+      if (fromDate || toDate) {
+        where.createdAt = {};
+        if (fromDate) {
+          where.createdAt.gte = fromDate;
+        }
+        if (toDate) {
+          where.createdAt.lte = toDate;
+        }
+      }
+
+      // Execute search
+      const [entries, total] = await Promise.all([
+        prisma.journalEntry.findMany({
+          where,
+          include: {
+            mood: {
+              include: {
+                moodType: true,
+              },
+            },
+          },
+          orderBy: {
+            createdAt: 'desc',
+          },
+          skip,
+          take: limit,
+        }),
+        prisma.journalEntry.count({ where }),
+      ]);
+
+      const totalPages = Math.ceil(total / limit);
+
+      res.status(200).json({
+        data: entries,
+        total,
+        page,
+        limit,
+        totalPages,
+      });
+    } catch (error) {
+      console.error('Search entries error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while searching journal entries',
+      });
+    }
+  }
+}
+```
+
+### 5. User Controller
+
+```typescript
+import { Request, Response } from 'express';
+import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcrypt';
+import { uploadToStorage } from '../utils/storage';
+
+const prisma = new PrismaClient();
+
+export class UserController {
+  // Get user profile
+  async getProfile(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          profileImageUrl: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+      if (!user) {
+        res.status(404).json({
+          code: 'USER_NOT_FOUND',
+          message: 'User not found',
+        });
+        return;
+      }
+
+      res.status(200).json(user);
+    } catch (error) {
+      console.error('Get profile error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while retrieving user profile',
+      });
+    }
+  }
+
+  // Update user profile
+  async updateProfile(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+      const { name, email } = req.body;
+
+      // Check if email is already in use by another user
+      if (email) {
+        const existingUser = await prisma.user.findFirst({
+          where: {
+            email,
+            id: { not: userId },
+          },
+        });
+
+        if (existingUser) {
+          res.status(400).json({
+            code: 'VALIDATION_ERROR',
+            message: 'Email is already in use',
+          });
+          return;
+        }
+      }
+
+      // Update user
+      const updatedUser = await prisma.user.update({
+        where: { id: userId },
+        data: {
+          name: name !== undefined ? name : undefined,
+          email: email !== undefined ? email : undefined,
+        },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          profileImageUrl: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+      res.status(200).json(updatedUser);
+    } catch (error) {
+      console.error('Update profile error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while updating user profile',
+      });
+    }
+  }
+
+  // Change password
+  async changePassword(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+      const { currentPassword, newPassword, confirmPassword } = req.body;
+
+      // Check if passwords match
+      if (newPassword !== confirmPassword) {
+        res.status(400).json({
+          code: 'VALIDATION_ERROR',
+          message: 'New password and confirmation do not match',
+        });
+        return;
+      }
+
+      // Get user with password
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+      });
+
+      if (!user) {
+        res.status(404).json({
+          code: 'USER_NOT_FOUND',
+          message: 'User not found',
+        });
+        return;
+      }
+
+      // Verify current password
+      const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
+      if (!isPasswordValid) {
+        res.status(401).json({
+          code: 'INVALID_PASSWORD',
+          message: 'Current password is incorrect',
+        });
+        return;
+      }
+
+      // Hash new password
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+      // Update password
+      await prisma.user.update({
+        where: { id: userId },
+        data: { password: hashedPassword },
+      });
+
+      res.status(200).json({ message: 'Password changed successfully' });
+    } catch (error) {
+      console.error('Change password error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while changing password',
+      });
+    }
+  }
+
+  // Upload profile image
+  async uploadProfileImage(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+      
+      if (!req.file) {
+        res.status(400).json({
+          code: 'VALIDATION_ERROR',
+          message: 'No image file provided',
+        });
+        return;
+      }
+
+      // Upload image to storage (e.g., S3, GCS)
+      const imageUrl = await uploadToStorage(req.file, `profile-images/${userId}`);
+
+      // Update user profile
+      const updatedUser = await prisma.user.update({
+        where: { id: userId },
+        data: { profileImageUrl: imageUrl },
+        select: {
+          id: true,
+          profileImageUrl: true,
+        },
+      });
+
+      res.status(200).json({
+        profileImageUrl: updatedUser.profileImageUrl,
+      });
+    } catch (error) {
+      console.error('Upload profile image error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while uploading profile image',
+      });
+    }
+  }
+}
+```
+
+### 6. Export Controller
+
+```typescript
+import { Request, Response } from 'express';
+import { PrismaClient } from '@prisma/client';
+import { format } from 'date-fns';
+import { createObjectCsvStringifier } from 'csv-writer';
+import PDFDocument from 'pdfkit';
+import { Readable } from 'stream';
+import { uploadToStorage } from '../utils/storage';
+
+const prisma = new PrismaClient();
+
+export class ExportController {
+  // Export journal entries
+  async exportEntries(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+      const exportFormat = (req.query.format as string) || 'json';
+      const fromDate = req.query.fromDate ? new Date(req.query.fromDate as string) : undefined;
+      const toDate = req.query.toDate ? new Date(req.query.toDate as string) : undefined;
+
+      // Build filter conditions
+      const where: any = {
+        userId,
+        deletedAt: null,
+      };
+
+      if (fromDate || toDate) {
+        where.createdAt = {};
+        if (fromDate) {
+          where.createdAt.gte = fromDate;
+        }
+        if (toDate) {
+          where.createdAt.lte = toDate;
+        }
+      }
+
+      // Get entries
+      const entries = await prisma.journalEntry.findMany({
+        where,
+        include: {
+          mood: {
+            include: {
+              moodType: true,
+            },
+          },
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+      });
+
+      // Format entries for export
+      const formattedEntries = entries.map(entry => ({
+        id: entry.id,
+        title: entry.title,
+        content: entry.content,
+        category: entry.category,
+        mood: entry.mood?.moodType.name || null,
+        moodEmoji: entry.mood?.moodType.emoji || null,
+        createdAt: format(entry.createdAt, 'yyyy-MM-dd HH:mm:ss'),
+      }));
+
+      // Generate export based on format
+      switch (exportFormat) {
+        case 'pdf':
+          return this.exportToPdf(formattedEntries, res);
+        case 'csv':
+          return this.exportToCsv(formattedEntries, res);
+        case 'json':
+        default:
+          return this.exportToJson(formattedEntries, res);
+      }
+    } catch (error) {
+      console.error('Export entries error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while exporting journal entries',
+      });
+    }
+  }
+
+  // Export mood data
+  async exportMoods(req: Request, res: Response): Promise<void> {
+    try {
+      const userId = req.user.id;
+      const exportFormat = (req.query.format as string) || 'json';
+      const fromDate = req.query.fromDate ? new Date(req.query.fromDate as string) : undefined;
+      const toDate = req.query.toDate ? new Date(req.query.toDate as string) : undefined;
+
+      // Build filter conditions
+      const where: any = { userId };
+
+      if (fromDate || toDate) {
+        where.date = {};
+        if (fromDate) {
+          where.date.gte = fromDate;
+        }
+        if (toDate) {
+          where.date.lte = toDate;
+        }
+      }
+
+      // Get moods
+      const moods = await prisma.mood.findMany({
+        where,
+        include: {
+          moodType: true,
+          journalEntry: {
+            select: {
+              id: true,
+              title: true,
+            },
+          },
+        },
+        orderBy: {
+          date: 'desc',
+        },
+      });
+
+      // Format moods for export
+      const formattedMoods = moods.map(mood => ({
+        id: mood.id,
+        mood: mood.moodType.name,
+        emoji: mood.moodType.emoji,
+        intensity: mood.intensity,
+        date: format(mood.date, 'yyyy-MM-dd'),
+        timeOfDay: mood.timeOfDay ? format(mood.timeOfDay, 'HH:mm:ss') : null,
+        notes: mood.notes || null,
+        journalEntryTitle: mood.journalEntry?.title || null,
+        createdAt: format(mood.createdAt, 'yyyy-MM-dd HH:mm:ss'),
+      }));
+
+      // Generate export based on format
+      switch (exportFormat) {
+        case 'pdf':
+          return this.exportMoodsToPdf(formattedMoods, res);
+        case 'csv':
+          return this.exportMoodsToCsv(formattedMoods, res);
+        case 'json':
+        default:
+          return this.exportMoodsToJson(formattedMoods, res);
+      }
+    } catch (error) {
+      console.error('Export moods error:', error);
+      res.status(500).json({
+        code: 'SERVER_ERROR',
+        message: 'An error occurred while exporting mood data',
+      });
+    }
+  }
+
+  // Helper methods for exporting entries
+  private exportToJson(entries: any[], res: Response): void {
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', 'attachment; filename=journal_entries.json');
+    res.status(200).json(entries);
+  }
+
+  private exportToCsv(entries: any[], res: Response): void {
+    const csvStringifier = createObjectCsvStringifier({
+      header: [
+        { id: 'title', title: 'Title' },
+        { id: 'content', title: 'Content' },
+        { id: 'category', title: 'Category' },
+        { id: 'mood', title: 'Mood' },
+        { id: 'moodEmoji', title: 'Mood Emoji' },
+        { id: 'createdAt', title: 'Created At' },
+      ],
+    });
+
+    const csvHeader = csvStringifier.getHeaderString();
+    const csvRows = csvStringifier.stringifyRecords(entries);
+    const csvContent = csvHeader + csvRows;
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename=journal_entries.csv');
+    res.status(200).send(csvContent);
+  }
+
+  private exportToPdf(entries: any[], res: Response): void {
+    const doc = new PDFDocument();
+    const buffers: Buffer[] = [];
+
+    doc.on('data', buffers.push.bind(buffers));
+    doc.on('end', () => {
+      const pdfData = Buffer.concat(buffers);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename=journal_entries.pdf');
+      res.status(200).send(pdfData);
+    });
+
+    // Add title
+    doc.fontSize(20).text('Journal Entries', { align: 'center' });
+    doc.moveDown();
+
+    // Add entries
+    entries.forEach((entry, index) => {
+      // Add some spacing between entries
+      if (index > 0) {
+        doc.addPage();
+      }
+
+      doc.fontSize(16).text(entry.title);
+      doc.fontSize(10).text(`Date: ${entry.createdAt}`);
+      doc.fontSize(10).text(`Category: ${entry.category}`);
+      
+      if (entry.mood) {
+        doc.fontSize(10).text(`Mood: ${entry.mood} ${entry.moodEmoji}`);
+      }
+      
+      doc.moveDown();
+      doc.fontSize(12).text(entry.content);
+    });
+
+    doc.end();
+  }
+
+  // Helper methods for exporting moods
+  private exportMoodsToJson(moods: any[], res: Response): void {
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', 'attachment; filename=mood_data.json');
+    res.status(200).json(moods);
+  }
+
+  private exportMoodsToCsv(moods: any[], res: Response): void {
+    const csvStringifier = createObjectCsvStringifier({
+      header: [
+        { id: 'mood', title: 'Mood' },
+        { id: 'emoji', title: 'Emoji' },
+        { id: 'intensity', title: 'Intensity' },
+        { id: 'date', title: 'Date' },
+        { id: 'timeOfDay', title: 'Time of Day' },
+        { id: 'notes', title: 'Notes' },
+        { id: 'journalEntryTitle', title: 'Journal Entry' },
+        { id: 'createdAt', title: 'Created At' },
+      ],
+    });
+
+    const csvHeader = csvStringifier.getHeaderString();
+    const csvRows = csvStringifier.stringifyRecords(moods);
+    const csvContent = csvHeader + csvRows;
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename=mood_data.csv');
+    res.status(200).send(csvContent);
+  }
+
+  private exportMoodsToPdf(moods: any[], res: Response): void {
+    const doc = new PDFDocument();
+    const buffers: Buffer[] = [];
+
+    doc.on('data', buffers.push.bind(buffers));
+    doc.on('end', () => {
+      const pdfData = Buffer.concat(buffers);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename=mood_data.pdf');
+      res.status(200).send(pdfData);
+    });
+
+    // Add title
+    doc.fontSize(20).text('Mood Tracking Data', { align: 'center' });
+    doc.moveDown();
+
+    // Add summary
+    const moodCounts: { [key: string]: number } = {};
+    moods.forEach(mood => {
+      if (!moodCounts[mood.mood]) {
+        moodCounts[mood.mood] = 0;
+      }
+      moodCounts[mood.mood]++;
+    });
+
+    doc.fontSize(14).text('Mood Summary');
+    Object.entries(moodCounts).forEach(([mood, count]) => {
+      const percentage = Math.round((count / moods.length) * 100);
+      doc.fontSize(12).text(`${mood}: ${count} entries (${percentage}%)`);
+    });
+
+    doc.moveDown();
+    doc.fontSize(14).text('Mood Entries');
+    doc.moveDown();
+
+    // Add mood entries
+    moods.forEach((mood, index) => {
+      // Add some spacing between entries
+      if (index > 0 && index % 5 === 0) {
+        doc.addPage();
+      }
+
+      doc.fontSize(12).text(`${mood.date} - ${mood.mood} ${mood.emoji} (Intensity: ${mood.intensity})`);
+      
+      if (mood.timeOfDay) {
+        doc.fontSize(10).text(`Time: ${mood.timeOfDay}`);
+      }
+      
+      if (mood.journalEntryTitle) {
+        doc.fontSize(10).text(`Journal Entry: ${mood.journalEntryTitle}`);
+      }
+      
+      if (mood.notes) {
+        doc.fontSize(10).text(`Notes: ${mood.notes}`);
+      }
+      
+      doc.moveDown();
+    });
+
+    doc.end();
+  }
+}
+```
+
+## Middleware
+
+### Authentication Middleware
+
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import jwt from 'jsonwebtoken';
+
+// Extend Express Request type to include user
+declare global {
+  namespace Express {
+    interface Request {
+      user: {
+        id: string;
+        type: string;
+      };
+    }
+  }
+}
+
+export const authenticate = (req: Request, res: Response, next: NextFunction) => {
+  try {
+    // Get token from header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required',
+      });
+    }
+
+    const token = authHeader.split(' ')[1];
+
+    // Verify token
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: string; type: string };
+      
+      // Check if token is access token
+      if (decoded.type !== 'access') {
+        return res.status(401).json({
+          code: 'INVALID_TOKEN',
+          message: 'Invalid token type',
+        });
+      }
+      
+      // Add user to request
+      req.user = {
+        id: decoded.userId,
+        type: decoded.type,
+      };
+      
+      next();
+    } catch (error) {
+      return res.status(401).json({
+        code: 'INVALID_TOKEN',
+        message: 'Invalid or expired token',
+      });
+    }
+  } catch (error) {
+    console.error('Authentication error:', error);
+    return res.status(500).json({
+      code: 'SERVER_ERROR',
+      message: 'An error occurred during authentication',
+    });
+  }
+};
+```
+
+## Utility Functions
+
+### Email Utility
+
+```typescript
+import nodemailer from 'nodemailer';
+
+interface EmailOptions {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+}
+
+export const sendEmail = async (options: EmailOptions): Promise<void> => {
+  // Create transporter
+  const transporter = nodemailer.createTransport({
+    host: process.env.EMAIL_HOST,
+    port: parseInt(process.env.EMAIL_PORT || '587'),
+    secure: process.env.EMAIL_SECURE === 'true',
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASSWORD,
+    },
+  });
+
+  // Send email
+  await transporter.sendMail({
+    from: process.env.EMAIL_FROM,
+    to: options.to,
+    subject: options.subject,
+    text: options.text,
+    html: options.html,
+  });
+};
+```
+
+### Storage Utility
+
+```typescript
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { v4 as uuidv4 } from 'uuid';
+import path from 'path';
+
+// Initialize S3 client
+const s3Client = new S3Client({
+  region: process.env.AWS_REGION || 'us-east-1',
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
+  },
+});
+
+export const uploadToStorage = async (file: Express.Multer.File, folder: string): Promise<string> => {
+  try {
+    // Generate unique filename
+    const fileExtension = path.extname(file.originalname);
+    const fileName = `${uuidv4()}${fileExtension}`;
+    const key = `${folder}/${fileName}`;
+
+    // Upload to S3
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: process.env.AWS_S3_BUCKET || 'comfy-journal',
+        Key: key,
+        Body: file.buffer,
+        ContentType: file.mimetype,
+      })
+    );
+
+    // Return public URL
+    return `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+  } catch (error) {
+    console.error('File upload error:', error);
+    throw new Error('Failed to upload file');
+  }
+};
+```
+
+## Routes
+
+### API Routes
+
+```typescript
+import express from 'express';
+import multer from 'multer';
+import { AuthController } from '../controllers/auth.controller';
+import { JournalEntryController } from '../controllers/journal-entry.controller';
+import { MoodController } from '../controllers/mood.controller';
+import { SearchController } from '../controllers/search.controller';
+import { UserController } from '../controllers/user.controller';
+import { ExportController } from '../controllers/export.controller';
+import { authenticate } from '../middleware/auth.middleware';
+
+const router = express.Router();
+const upload = multer({ storage: multer.memoryStorage() });
+
+// Controllers
+const authController = new AuthController();
+const journalEntryController = new JournalEntryController();
+const moodController = new MoodController();
+const searchController = new SearchController();
+const userController = new UserController();
+const exportController = new ExportController();
+
+// Auth routes
+router.post('/auth/register', authController.register.bind(authController));
+router.post('/auth/login', authController.login.bind(authController));
+router.post('/auth/refresh', authController.refresh.bind(authController));
+router.post('/auth/logout', authController.logout.bind(authController));
+router.post('/auth/forgot-password', authController.forgotPassword.bind(authController));
+router.post('/auth/reset-password', authController.resetPassword.bind(authController));
+router.get('/auth/me', authenticate, authController.me.bind(authController));
+
+// Journal entry routes
+router.get('/entries', authenticate, journalEntryController.getEntries.bind(journalEntryController));
+router.post('/entries', authenticate, journalEntryController.createEntry.bind(journalEntryController));
+router.get('/entries/:id', authenticate, journalEntryController.getEntry.bind(journalEntryController));
+router.put('/entries/:id', authenticate, journalEntryController.updateEntry.bind(journalEntryController));
+router.delete('/entries/:id', authenticate, journalEntryController.deleteEntry.bind(journalEntryController));
+
+// Mood routes
+router.get('/moods/types', authenticate, moodController.getMoodTypes.bind(moodController));
+router.get('/moods', authenticate, moodController.getMoods.bind(moodController));
+router.post('/moods', authenticate, moodController.createMood.bind(moodController));
+router.get('/moods/stats', authenticate, moodController.getMoodStats.bind(moodController));
+router.get('/moods/calendar', authenticate, moodController.getMoodCalendar.bind(moodController));
+router.get('/moods/insights', authenticate, moodController.getMoodInsights.bind(moodController));
+
+// Search routes
+router.get('/search', authenticate, searchController.searchEntries.bind(searchController));
+
+// User routes
+router.get('/users/profile', authenticate, userController.getProfile.bind(userController));
+router.put('/users/profile', authenticate, userController.updateProfile.bind(userController));
+router.post('/users/change-password', authenticate, userController.changePassword.bind(userController));
+router.post(
+  '/users/profile-image',
+  authenticate,
+  upload.single('image'),
+  userController.uploadProfileImage.bind(userController)
+);
+
+// Export routes
+router.get('/export/entries', authenticate, exportController.exportEntries.bind(exportController));
+router.get('/export/moods', authenticate, exportController.exportMoods.bind(exportController));
+
+export default router;
+```
+
+## Main Application Setup
+
+```typescript
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import dotenv from 'dotenv';
+import apiRoutes from './routes/api.routes';
+
+// Load environment variables
+dotenv.config();
+
+// Create Express app
+const app = express();
+
+// Middleware
+app.use(cors());
+app.use(helmet());
+app.use(morgan('dev'));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// API routes
+app.use('/api/v1', apiRoutes);
+
+// Error handling
+app.use((req, res) => {
+  res.status(404).json({
+    code: 'NOT_FOUND',
+    message: 'Route not found',
+  });
+});
+
+// Start server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+export default app;
+```
+
+## Database Seed Script
+
+```typescript
+import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcrypt';
+
+const prisma = new PrismaClient();
+
+async function main() {
+  // Create mood types
+  const moodTypes = [
+    {
+      name: 'happy',
+      emoji: '😊',
+      colorCode: '#4ade80',
+      description: 'Feeling joyful and content',
+    },
+    {
+      name: 'calm',
+      emoji: '😌',
+      colorCode: '#60a5fa',
+      description: 'Feeling peaceful and relaxed',
+    },
+    {
+      name: 'sad',
+      emoji: '😔',
+      colorCode: '#818cf8',
+      description: 'Feeling down or unhappy',
+    },
+    {
+      name: 'angry',
+      emoji: '😠',
+      colorCode: '#f87171',
+      description: 'Feeling frustrated or irritated',
+    },
+    {
+      name: 'anxious',
+      emoji: '😰',
+      colorCode: '#facc15',
+      description: 'Feeling worried or nervous',
+    },
+    {
+      name: 'neutral',
+      emoji: '😐',
+      colorCode: '#9ca3af',
+      description: 'Feeling neither positive nor negative',
+    },
+  ];
+
+  for (const moodType of moodTypes) {
+    await prisma.moodType.upsert({
+      where: { name: moodType.name },
+      update: {},
+      create: moodType,
+    });
+  }
+
+  // Create demo user
+  const hashedPassword = await bcrypt.hash('Password123!', 10);
+  
+  const user = await prisma.user.upsert({
+    where: { email: 'jane.doe@example.com' },
+    update: {},
+    create: {
+      name: 'Jane Doe',
+      email: 'jane.doe@example.com',
+      password: hashedPassword,
+    },
+  });
+
+  console.log('Database seeded successfully!');
+}
+
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
+```
+
+## Summary
+
+This implementation provides a comprehensive backend for the Comfy Journal application with:
+
+1. **Database Models**: Using Prisma ORM with PostgreSQL for:
+
+1. User management
+2. Journal entries with categories
+3. Mood tracking with different mood types
+4. Authentication with refresh tokens
+
+
+
+2. **Controllers**:
+
+1. AuthController: Handles user registration, login, token refresh, and password reset
+2. JournalEntryController: Manages CRUD operations for journal entries
+3. MoodController: Handles mood tracking, statistics, and insights
+4. SearchController: Provides full-text search across journal entries
+5. UserController: Manages user profile and settings
+6. ExportController: Exports journal entries and mood data in various formats
+
+
+
+3. **Middleware**:
+
+1. Authentication middleware for securing API endpoints
+
+
+
+4. **Utilities**:
+
+1. Email sending for password reset
+2. File storage for profile images
+
+
+
+5. **Routes**:
+
+1. RESTful API routes for all functionality
+
+
+
+
+
+The implementation follows best practices for:
+
+- Security (password hashing, JWT authentication)
+- Error handling
+- Data validation
+- File uploads
+- Data export in multiple formats
+
+
+This backend implementation fully supports the frontend application and provides all the necessary API endpoints defined in the OpenAPI specification.
+

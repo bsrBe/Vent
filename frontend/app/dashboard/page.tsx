@@ -25,9 +25,20 @@ import {
   DialogDescription,
   DialogFooter,
   DialogClose,
-} from "@/components/ui/dialog" // Import Dialog components
+} from "@/components/ui/dialog"
 
 // Define types for API data (adjust based on actual backend response)
+// Type for fetched categories (assuming backend sends string array)
+interface CategoryResponse {
+  categories: string[];
+}
+
+// Type for formatted categories used in state/rendering
+interface FormattedCategory {
+  id: string;
+  name: string;
+}
+
 interface User {
   _id: string
   name: string
@@ -54,14 +65,7 @@ interface Entry {
   }
 }
 
-// Categories based on backend enum
-const categories = [
-  { id: "FAMILY", name: "Family" },
-  { id: "RELATIONSHIP", name: "Relationship" },
-  { id: "MYSELF", name: "Myself" },
-  { id: "WORK", name: "Work" },
-  { id: "OTHER", name: "Other" },
-]
+// REMOVED Hardcoded categories array
 
 // Inspirational prompts for journal entries
 const journalPrompts = [
@@ -95,7 +99,7 @@ export default function DashboardPage() {
   const router = useRouter()
   const { toast } = useToast()
   const [date, setDate] = useState<Date | undefined>(new Date())
-  const [selectedCategory, setSelectedCategory] = useState(categories[0].id) // Default to first category ID
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null) // Initialize as null, set after fetch
   const [entryContent, setEntryContent] = useState("")
   const [entryTitle, setEntryTitle] = useState("")
   const [activeTab, setActiveTab] = useState("new-entry")
@@ -112,6 +116,8 @@ export default function DashboardPage() {
   const [isLoadingUser, setIsLoadingUser] = useState(true)
   const [isLoadingMoods, setIsLoadingMoods] = useState(true)
   const [isLoadingEntries, setIsLoadingEntries] = useState(true)
+  const [entryCategories, setEntryCategories] = useState<FormattedCategory[]>([]); // State for fetched categories
+  const [isLoadingCategories, setIsLoadingCategories] = useState(true); // Loading state for categories
   const [selectedEntryForModal, setSelectedEntryForModal] = useState<Entry | null>(null); // State for modal view
 
   // Fetch user data
@@ -166,7 +172,42 @@ export default function DashboardPage() {
       }
     }
     fetchMoodTypes()
-  }, [toast, router, selectedMoodId]) // Add selectedMoodId
+  }, [toast, router, selectedMoodId])
+
+  // Fetch entry categories
+  useEffect(() => {
+    const fetchCategories = async () => {
+      setIsLoadingCategories(true);
+      try {
+        // Fetch categories from the new endpoint
+        const response = await fetchAuthenticated<CategoryResponse>("/api/v1/entries/categories");
+        if (response.status === "success" && response.data?.categories) {
+          // Format categories for display
+          const formattedCategories = response.data.categories.map(cat => ({
+            id: cat,
+            name: cat.charAt(0).toUpperCase() + cat.slice(1).toLowerCase() // Simple title case
+          }));
+          setEntryCategories(formattedCategories);
+          // Set default selected category *after* fetching, only if not already set
+          if (formattedCategories.length > 0 && !selectedCategory) {
+            setSelectedCategory(formattedCategories[0].id);
+          }
+        } else {
+          toast({ variant: "destructive", title: "Error", description: "Could not fetch entry categories." });
+        }
+      } catch (error: any) {
+        toast({ variant: "destructive", title: "API Error", description: error.message || "Failed to fetch entry categories." });
+        if (error.message.includes("Session expired")) {
+          router.push("/login");
+        }
+      } finally {
+        setIsLoadingCategories(false);
+      }
+    };
+    fetchCategories();
+    // Depend on toast, router. selectedCategory is included to set default after fetch if needed.
+  }, [toast, router, selectedCategory]);
+
 
   // Fetch recent entries
   const fetchRecentEntries = useCallback(async () => {
@@ -310,19 +351,29 @@ export default function DashboardPage() {
               <CardDescription>Select a category and start writing your thoughts.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="flex flex-wrap gap-2">
-                {categories.map((category) => (
-                  <Button
-                    key={category.id}
-                    variant={selectedCategory === category.id ? "default" : "outline"}
-                    onClick={() => setSelectedCategory(category.id)}
-                    className="rounded-full"
-                  >
-                    {category.name}
-                  </Button>
-                ))}
-              </div>
+               {/* Category Selection */}
+               <div className="flex flex-wrap gap-2">
+                 {isLoadingCategories ? (
+                   <>
+                     <Skeleton className="h-10 w-24 rounded-full" />
+                     <Skeleton className="h-10 w-28 rounded-full" />
+                     <Skeleton className="h-10 w-20 rounded-full" />
+                   </>
+                 ) : (
+                   entryCategories.map((category) => ( // Use entryCategories state
+                     <Button
+                       key={category.id}
+                       variant={selectedCategory === category.id ? "default" : "outline"}
+                       onClick={() => setSelectedCategory(category.id)}
+                       className="rounded-full"
+                     >
+                       {category.name}
+                     </Button>
+                   ))
+                 )}
+               </div>
 
+              {/* Mood Selection */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-medium">How are you feeling today?</h3>
@@ -436,9 +487,11 @@ export default function DashboardPage() {
                     </div>
                 </CardHeader>
                 <CardContent>
+                  {/* Display Category Name in Recent Entry Card */}
                   <div className="mb-2">
                     <span className="inline-flex items-center rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
-                      {categories.find((c) => c.id === entry.category)?.name}
+                      {/* Find category name from fetched entryCategories */}
+                      {entryCategories.find((c) => c.id === entry.category)?.name || entry.category}
                     </span>
                   </div>
                   {/* Always render truncated content in the card */}
@@ -480,8 +533,10 @@ export default function DashboardPage() {
                     </div>
                     <DialogDescription>
                       {format(new Date(selectedEntryForModal.createdAt), "MMMM d, yyyy")} - {" "}
+                      {/* Display Category Name in Modal */}
                       <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                        {categories.find((c) => c.id === selectedEntryForModal.category)?.name}
+                        {/* Find category name from fetched entryCategories */}
+                        {entryCategories.find((c) => c.id === selectedEntryForModal.category)?.name || selectedEntryForModal.category}
                       </span>
                     </DialogDescription>
                   </div>

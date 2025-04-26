@@ -94,6 +94,29 @@ exports.getEntries = catchAsync(async (req, res, next) => {
   });
 });
 
+// Get available entry categories (conditionally adds BISRAT)
+exports.getEntryCategories = catchAsync(async (req, res, next) => {
+  // Base categories available to everyone
+  // Note: Ideally, this enum would be imported directly from the model
+  // or a shared constants file to avoid duplication. For simplicity here,
+  // we redefine it based on the model's current state.
+  const baseCategories = ['FAMILY', 'RELATIONSHIP', 'MYSELF', 'WORK', 'OTHER'];
+  let availableCategories = [...baseCategories]; // Start with a copy
+
+  // Check if the logged-in user is betsi2426@gmail.com
+  if (req.user && req.user.email === 'betsi2426@gmail.com') {
+    // Add the special category only for this user
+    availableCategories.push('BISRAT');
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      categories: availableCategories,
+    },
+  });
+});
+
 exports.createEntry = catchAsync(async (req, res, next) => {
   const userId = req.user.id;
   const { title, content, category, moodTypeId, moodIntensity, moodNotes, moodDate, moodTimeOfDay } = req.body;

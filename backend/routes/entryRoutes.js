@@ -7,6 +7,9 @@ const router = express.Router();
 // All routes below this middleware require authentication
 router.use(protect);
 
+// Route to get available categories (conditionally includes 'BISRAT')
+router.get('/categories', entryController.getEntryCategories); // GET /api/v1/entries/categories
+
 router
   .route('/')
   .get(entryController.getEntries) // GET /api/v1/entries (with filtering/pagination query params)

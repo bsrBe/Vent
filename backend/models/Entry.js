@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
-const categoryEnum = ['FAMILY', 'RELATIONSHIP', 'MYSELF', 'WORK', 'OTHER'];
+// Add BISRAT to the enum to allow it in the database schema
+const categoryEnum = ['FAMILY', 'RELATIONSHIP', 'MYSELF', 'WORK', 'OTHER', 'BISRAT'];
 
 const entrySchema = new mongoose.Schema(
   {

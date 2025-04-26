@@ -86,6 +86,7 @@ export default function MoodPage() {
   const [isLoadingCalendar, setIsLoadingCalendar] = useState(true);
   const [isLoadingInsights, setIsLoadingInsights] = useState(true);
   const [isLoadingMoodTypes, setIsLoadingMoodTypes] = useState(true);
+  const [isLoggingMood, setIsLoggingMood] = useState(false); // State for logging mood
 
   // Fetch mood types (needed for calendar display and Today's Mood card)
    useEffect(() => {
@@ -223,6 +224,86 @@ export default function MoodPage() {
    }, [toast, router]); // Fetch once on mount
 
 
+   // Handler to log today's mood
+   const handleLogTodayMood = async (moodTypeId: string) => {
+     setIsLoggingMood(true);
+     const today = new Date();
+     try {
+       const response = await fetchAuthenticated("/api/v1/moods", {
+         method: "POST",
+         body: JSON.stringify({
+           moodTypeId: moodTypeId,
+           date: today.toISOString(), // Send today's date
+           // Add intensity or notes if your UI supports them
+         }),
+       });
+
+       if (response.status === "success") {
+         toast({
+           title: "Mood Logged",
+           description: "Your mood for today has been recorded.",
+         });
+         // Optimistically update calendar data or re-fetch
+         // For simplicity, let's re-fetch calendar data for the current month
+         await fetchCalendarData(selectedCalendarDate || new Date()); // Need to wrap fetch logic in a callable function
+       } else {
+         toast({
+           variant: "destructive",
+           title: "Log failed",
+           description: response.message || "Could not log mood.",
+         });
+       }
+     } catch (error: any) {
+       toast({
+         variant: "destructive",
+         title: "API Error",
+         description: error.message || "Failed to log mood.",
+       });
+       if (error.message.includes("Session expired")) {
+         router.push("/login");
+       }
+     } finally {
+       setIsLoggingMood(false);
+     }
+   };
+
+   // Wrap calendar fetch logic into a callable function
+   const fetchCalendarData = useCallback(async (targetDate: Date) => {
+      setIsLoadingCalendar(true);
+      const currentMonth = targetDate.getMonth() + 1;
+      const currentYear = targetDate.getFullYear();
+      const params = new URLSearchParams({
+         month: currentMonth.toString(),
+         year: currentYear.toString(),
+      });
+
+      try {
+        const response = await fetchAuthenticated<{ calendarData: CalendarData }>(`/api/v1/moods/calendar?${params.toString()}`);
+        if (response.status === 'success' && response.data?.calendarData) {
+          setCalendarData(response.data.calendarData);
+        } else {
+          // Don't toast error here if called from log mood, maybe handle differently
+          console.error("Could not fetch calendar data:", response.message);
+          setCalendarData({});
+        }
+      } catch (error: any) {
+         console.error("Failed to fetch calendar data:", error.message);
+         setCalendarData({});
+         // Avoid redundant toast/redirect if called after another failed API call
+         // if (error.message.includes("Session expired")) {
+         //   router.push("/login");
+         // }
+      } finally {
+         setIsLoadingCalendar(false);
+      }
+   }, [toast, router]); // Dependencies for fetchCalendarData
+
+   // Modify useEffect for initial calendar fetch
+   useEffect(() => {
+     fetchCalendarData(selectedCalendarDate || new Date());
+   }, [selectedCalendarDate, fetchCalendarData]); // Use fetchCalendarData
+
+
   // Handler for changing stats period tab
   const handleTabChange = (value: string) => {
     setStatsPeriod(value);
@@ -287,11 +368,16 @@ export default function MoodPage() {
                   <Button
                     key={mood._id}
                     variant="outline"
-                    // Highlight button if it matches today's recorded mood
+                    // Highlight button if it matches today's recorded mood OR if logging
                     className={`h-10 px-3 ${todaysMood?._id === mood._id ? getMoodColorClass(mood.colorCode) : ""}`}
-                    // Potentially disable or add onClick to log today's mood
+                    onClick={() => handleLogTodayMood(mood._id)} // Add onClick handler
+                    disabled={isLoggingMood} // Disable while logging
                   >
-                    <span className="mr-1 text-base">{mood.emoji}</span>
+                    {isLoggingMood && todaysMood?._id !== mood._id ? ( // Show loader only on the clicked button if not already selected
+                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                       <span className="mr-1 text-base">{mood.emoji}</span>
+                    )}
                     <span>{mood.name}</span>
                   </Button>
                 ))}
@@ -346,13 +432,13 @@ export default function MoodPage() {
              {/* Popover for Custom Date Range Selection */}
              <Popover>
                <PopoverTrigger asChild>
-                 <Button
-                   variant="outline"
-                   className={`w-full justify-start text-left font-normal ${statsPeriod !== 'custom' ? 'text-muted-foreground' : ''}`}
-                   disabled={statsPeriod !== 'custom'} // Only enable when 'custom' tab is active
-                 >
-                   <CalendarIcon className="mr-2 h-4 w-4" />
-                   {customDateRange.from ? (
+                  <Button
+                    variant="outline"
+                    className={`w-full justify-start text-left font-normal ${!customDateRange.from ? 'text-muted-foreground' : ''}`}
+                    // Remove the disabled prop to allow opening anytime
+                  >
+                    <CalendarIcon className="mr-2 h-4 w-4" />
+                    {customDateRange.from ? (
                      customDateRange.to ? (
                        <>
                          {format(customDateRange.from, "LLL dd, y")} - {format(customDateRange.to, "LLL dd, y")}

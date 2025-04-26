@@ -1,15 +1,15 @@
 "use client"
 
 import { useState, useEffect, useCallback } from "react"
-import { format, subDays, subMonths, parseISO } from "date-fns"
-import { CalendarIcon, Loader2 } from "lucide-react"
+import { format, parseISO } from "date-fns" // Removed subDays, subMonths, CalendarIcon
+import { Loader2 } from "lucide-react" // Removed CalendarIcon
 import { useRouter } from "next/navigation"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+// Removed Tabs imports
 import { Calendar } from "@/components/ui/calendar"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+// Removed Popover imports
 import { MoodChart } from "@/components/mood-chart"
 import { fetchAuthenticated } from "@/lib/api"
 import { useToast } from "@/components/ui/use-toast"
@@ -68,15 +68,11 @@ export default function MoodPage() {
   const router = useRouter()
   const { toast } = useToast()
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<Date | undefined>(new Date())
-  const [statsPeriod, setStatsPeriod] = useState("month") // 'week', 'month', '3months', 'custom'
-  const [customDateRange, setCustomDateRange] = useState<{ from?: Date; to?: Date }>({
-     from: undefined,
-     to: undefined
-  });
+  // Removed statsPeriod and customDateRange state
 
   // State for fetched data
   const [moodStats, setMoodStats] = useState<MoodStat[]>([]);
-  const [mostFrequentMood, setMostFrequentMood] = useState<MoodStat['moodType'] | null>(null);
+  const [mostFrequentMoods, setMostFrequentMoods] = useState<(MoodStat['moodType'])[]>([]); // Changed to array for ties
   const [calendarData, setCalendarData] = useState<CalendarData>({});
   const [moodInsights, setMoodInsights] = useState<MoodInsights | null>(null);
   const [moodTypes, setMoodTypes] = useState<MoodType[]>([]); // Also used for Today's Mood card
@@ -112,43 +108,31 @@ export default function MoodPage() {
   }, [toast, router]);
 
 
-  // Fetch Stats Data based on period/range
+  // Fetch Stats Data (simplified - assuming backend defaults period or uses a fixed one like 'month')
   useEffect(() => {
      const fetchStats = async () => {
        setIsLoadingStats(true);
-       const params = new URLSearchParams();
-       params.set('period', statsPeriod);
-
-       if (statsPeriod === 'custom' && customDateRange.from) {
-         params.set('fromDate', format(customDateRange.from, 'yyyy-MM-dd'));
-       }
-       if (statsPeriod === 'custom' && customDateRange.to) {
-         params.set('toDate', format(customDateRange.to, 'yyyy-MM-dd'));
-       }
-
+       // No period/date params sent, backend will use its default (e.g., 'month')
        try {
+         // Expecting potentially multiple most frequent moods now
          const response = await fetchAuthenticated<{
-            mostFrequentMood: MoodStat['moodType'] | null;
+            mostFrequentMoods: (MoodStat['moodType'])[]; // Expecting array
             moodCounts: MoodStat[];
-            dateRange: { from: string; to: string };
-         }>(`/api/v1/moods/stats?${params.toString()}`);
+            // dateRange might still be returned by backend for context
+         }>(`/api/v1/moods/stats`); // Removed params
 
          if (response.status === 'success' && response.data) {
            setMoodStats(response.data.moodCounts || []);
-           setMostFrequentMood(response.data.mostFrequentMood || null);
-           // Update custom date range display if backend adjusted it for 'custom' period
-           if (statsPeriod === 'custom' && response.data.dateRange) {
-              setCustomDateRange({ from: parseISO(response.data.dateRange.from), to: parseISO(response.data.dateRange.to) });
-           }
+           setMostFrequentMoods(response.data.mostFrequentMoods || []); // Set array
          } else {
            toast({ variant: "destructive", title: "Error", description: response.message || "Could not fetch mood stats." });
            setMoodStats([]);
-           setMostFrequentMood(null);
+           setMostFrequentMoods([]); // Reset array
          }
        } catch (error: any) {
          toast({ variant: "destructive", title: "API Error", description: error.message || "Failed to fetch mood stats." });
          setMoodStats([]);
-         setMostFrequentMood(null);
+         setMostFrequentMoods([]); // Reset array
          if (error.message.includes("Session expired")) {
            router.push("/login");
          }
@@ -157,7 +141,7 @@ export default function MoodPage() {
        }
      };
      fetchStats();
-  }, [statsPeriod, customDateRange, toast, router]);
+  }, [toast, router]); // Dependencies updated
 
 
   // Fetch Calendar Data
@@ -326,27 +310,7 @@ export default function MoodPage() {
    }, [selectedCalendarDate, fetchCalendarData]); // Use fetchCalendarData
 
 
-  // Handler for changing stats period tab
-  const handleTabChange = (value: string) => {
-    setStatsPeriod(value);
-  };
-
-   // Type guard for DateRange
-   const isDateRange = (value: any): value is { from?: Date; to?: Date } => {
-     return typeof value === 'object' && value !== null && ('from' in value || 'to' in value);
-   }
-
-   // Handler for custom date range selection
-   const handleCustomDateRangeSelect = (range: import("react-day-picker").DateRange | undefined) => {
-     setCustomDateRange({
-        from: range?.from,
-        to: range?.to,
-     });
-     // Automatically switch tab to custom if a range is selected
-     if (range?.from || range?.to) {
-        setStatsPeriod('custom');
-     }
-   };
+  // Removed handleTabChange and handleCustomDateRangeSelect handlers
 
    // Prepare data for MoodChart component
    const chartData = moodStats.map(stat => ({
@@ -376,7 +340,7 @@ export default function MoodPage() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle>Most Frequent Mood</CardTitle>
-            <CardDescription>In the selected period</CardDescription>
+            <CardDescription>Based on last month's entries</CardDescription> {/* Updated description */}
           </CardHeader>
           <CardContent>
             {isLoadingStats ? (
@@ -387,94 +351,38 @@ export default function MoodPage() {
                    <Skeleton className="h-4 w-28" />
                  </div>
               </div>
-            ) : mostFrequentMood ? (
-              <div className="flex items-center gap-2">
-                <div className={`flex h-12 w-12 items-center justify-center rounded-full ${getMoodColorClass(mostFrequentMood.colorCode)} text-2xl`}>
-                  {mostFrequentMood.emoji}
+            ) : mostFrequentMoods.length > 0 ? (
+              // Display multiple moods if there's a tie
+              mostFrequentMoods.map((mood, index) => (
+                <div key={mood.id} className={`flex items-center gap-2 ${index > 0 ? 'mt-2' : ''}`}>
+                  <div className={`flex h-12 w-12 items-center justify-center rounded-full ${getMoodColorClass(mood.colorCode)} text-2xl`}>
+                    {mood.emoji}
+                  </div>
+                  <div>
+                    <p className="font-medium">{mood.name}</p>
+                    {/* Find count from moodStats */}
+                    <p className="text-sm text-muted-foreground">
+                       {moodStats.find(s => s.moodType.id === mood.id)?.count || 0} entries
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <p className="font-medium">{mostFrequentMood.name}</p>
-                  {/* Find count from moodStats */}
-                  <p className="text-sm text-muted-foreground">
-                     {moodStats.find(s => s.moodType.id === mostFrequentMood.id)?.count || 0} entries
-                  </p>
-                </div>
-              </div>
+              ))
             ) : (
-               <p className="text-sm text-muted-foreground">No mood data for this period.</p>
+               <p className="text-sm text-muted-foreground">No mood data found for the last month.</p>
             )}
           </CardContent>
         </Card>
 
-        {/* Custom Date Range Card - Spans full width on medium screens now */}
-        <Card className="md:col-span-1">
-          <CardHeader className="pb-2">
-            <CardTitle>Date Range</CardTitle>
-            <CardDescription>Select a time period to analyze</CardDescription>
-          </CardHeader>
-          <CardContent>
-             {/* Popover for Custom Date Range Selection */}
-             <Popover>
-               <PopoverTrigger asChild>
-                 <Button
-                    variant="outline"
-                    className={`w-full justify-start text-left font-normal ${!customDateRange.from ? 'text-muted-foreground' : ''}`}
-                    // No disabled attribute needed here
-                  >
-                    <CalendarIcon className="mr-2 h-4 w-4" />
-                    {customDateRange.from ? (
-                     customDateRange.to ? (
-                       <>
-                         {format(customDateRange.from, "LLL dd, y")} - {format(customDateRange.to, "LLL dd, y")}
-                       </>
-                     ) : (
-                       format(customDateRange.from, "LLL dd, y")
-                     )
-                   ) : (
-                     <span>Select custom range</span>
-                   )}
-                 </Button>
-               </PopoverTrigger>
-               <PopoverContent className="w-auto p-0">
-                <Calendar
-                  mode="range"
-                  // Ensure 'selected' is either a valid DateRange ({from: Date, to?: Date}) or undefined
-                  selected={customDateRange.from ? { from: customDateRange.from, to: customDateRange.to } : undefined}
-                  onSelect={handleCustomDateRangeSelect}
-                  initialFocus
-                  numberOfMonths={2} // Show two months for easier range selection
-                />
-               </PopoverContent>
-             </Popover>
-          </CardContent>
-        </Card>
+        {/* Removed Date Range Card */}
       </div>
 
       {/* Mood Distribution Card */}
       <Card>
         <CardHeader>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <CardTitle>Mood Distribution</CardTitle>
-              <CardDescription>
-                 {/* Dynamically show date range based on selected period */}
-                 {statsPeriod === 'week' && `Last 7 Days`}
-                 {statsPeriod === 'month' && `Last Month`}
-                 {statsPeriod === '3months' && `Last 3 Months`}
-                 {statsPeriod === 'custom' && customDateRange.from && customDateRange.to &&
-                   `${format(customDateRange.from, "MMM d, yyyy")} - ${format(customDateRange.to, "MMM d, yyyy")}`
-                 }
-                 {statsPeriod === 'custom' && !(customDateRange.from && customDateRange.to) && `Custom Range`}
-              </CardDescription>
-            </div>
-            <Tabs defaultValue="month" value={statsPeriod} onValueChange={handleTabChange}>
-              <TabsList>
-                <TabsTrigger value="week">Week</TabsTrigger>
-                <TabsTrigger value="month">Month</TabsTrigger>
-                <TabsTrigger value="3months">3 Months</TabsTrigger>
-                <TabsTrigger value="custom">Custom</TabsTrigger>
-              </TabsList>
-            </Tabs>
+          {/* Removed outer flex div and Tabs component */}
+          <div>
+            <CardTitle>Mood Distribution</CardTitle>
+            <CardDescription>Based on last month's entries</CardDescription> {/* Updated description */}
           </div>
         </CardHeader>
         <CardContent>
@@ -564,7 +472,9 @@ export default function MoodPage() {
                 <h3 className="font-medium">Your mood trends ({moodInsights.period})</h3>
                 <p className="text-sm text-muted-foreground">
                   You recorded {moodInsights.totalMoodsRecorded} moods during this period.
-                  {mostFrequentMood && ` Your most frequent mood was ${mostFrequentMood.name.toLowerCase()}.`}
+                  {/* Updated to handle multiple most frequent moods */}
+                  {mostFrequentMoods.length === 1 && ` Your most frequent mood was ${mostFrequentMoods[0].name.toLowerCase()}.`}
+                  {mostFrequentMoods.length > 1 && ` Your most frequent moods were ${mostFrequentMoods.map(m => m.name.toLowerCase()).join(', ')}.`}
                   Try to notice what activities or situations are associated with your different moods.
                 </p>
               </div>

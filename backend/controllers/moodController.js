@@ -178,7 +178,7 @@ exports.getMoodStats = catchAsync(async (req, res, next) => {
   const stats = await Mood.aggregate([
     {
       $match: {
-        user: req.user._id, // Match moods for the logged-in user
+        user: req.user.id, // Corrected: Match moods for the logged-in user using req.user.id
         date: { $gte: fromDate, $lte: toDate }, // Match within the date range
       },
     },

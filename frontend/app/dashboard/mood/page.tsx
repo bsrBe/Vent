@@ -86,7 +86,7 @@ export default function MoodPage() {
   const [isLoadingCalendar, setIsLoadingCalendar] = useState(true);
   const [isLoadingInsights, setIsLoadingInsights] = useState(true);
   const [isLoadingMoodTypes, setIsLoadingMoodTypes] = useState(true);
-  const [isLoggingMood, setIsLoggingMood] = useState(false); // State for logging mood
+  const [isLoggingMood, setIsLoggingMood] = useState<string | null>(null); // Store ID of mood being logged
 
   // Fetch mood types (needed for calendar display and Today's Mood card)
    useEffect(() => {
@@ -224,49 +224,6 @@ export default function MoodPage() {
    }, [toast, router]); // Fetch once on mount
 
 
-   // Handler to log today's mood
-   const handleLogTodayMood = async (moodTypeId: string) => {
-     setIsLoggingMood(true);
-     const today = new Date();
-     try {
-       const response = await fetchAuthenticated("/api/v1/moods", {
-         method: "POST",
-         body: JSON.stringify({
-           moodTypeId: moodTypeId,
-           date: today.toISOString(), // Send today's date
-           // Add intensity or notes if your UI supports them
-         }),
-       });
-
-       if (response.status === "success") {
-         toast({
-           title: "Mood Logged",
-           description: "Your mood for today has been recorded.",
-         });
-         // Optimistically update calendar data or re-fetch
-         // For simplicity, let's re-fetch calendar data for the current month
-         await fetchCalendarData(selectedCalendarDate || new Date()); // Need to wrap fetch logic in a callable function
-       } else {
-         toast({
-           variant: "destructive",
-           title: "Log failed",
-           description: response.message || "Could not log mood.",
-         });
-       }
-     } catch (error: any) {
-       toast({
-         variant: "destructive",
-         title: "API Error",
-         description: error.message || "Failed to log mood.",
-       });
-       if (error.message.includes("Session expired")) {
-         router.push("/login");
-       }
-     } finally {
-       setIsLoggingMood(false);
-     }
-   };
-
    // Wrap calendar fetch logic into a callable function
    const fetchCalendarData = useCallback(async (targetDate: Date) => {
       setIsLoadingCalendar(true);
@@ -297,6 +254,71 @@ export default function MoodPage() {
          setIsLoadingCalendar(false);
       }
    }, [toast, router]); // Dependencies for fetchCalendarData
+
+   // Handler to log today's mood
+   const handleLogTodayMood = async (moodTypeId: string) => {
+     setIsLoggingMood(moodTypeId); // Set the ID of the mood being logged
+     const today = new Date();
+     const todayStr = format(today, "yyyy-MM-dd");
+     const selectedMoodType = moodTypes.find(m => m._id === moodTypeId); // Find the full mood type object
+
+     if (!selectedMoodType) {
+       toast({ variant: "destructive", title: "Error", description: "Selected mood type not found." });
+       setIsLoggingMood(null);
+       return;
+     }
+
+     try {
+       const response = await fetchAuthenticated("/api/v1/moods", {
+         method: "POST",
+         body: JSON.stringify({
+           moodTypeId: moodTypeId,
+           date: today.toISOString(), // Send today's date
+           // Add intensity or notes if your UI supports them
+         }),
+       });
+
+       if (response.status === "success") {
+         toast({
+           title: "Mood Logged",
+           description: "Your mood for today has been recorded.",
+         });
+         // Optimistically update calendar data for instant feedback
+         setCalendarData(prevData => {
+           const newData = { ...prevData };
+           const newEntry: CalendarMoodEntry = {
+             // Assuming the backend returns the created mood object in response.data.mood
+             // If not, construct it manually. For now, using placeholder ID and selectedMoodType
+             id: response.data?.mood?._id || `temp-${Date.now()}`, // Use returned ID or temp
+             moodType: selectedMoodType,
+             // Add intensity/notes if applicable
+           };
+           // Replace today's entry or add it. Assuming only one mood per day for this card.
+           newData[todayStr] = [newEntry];
+           return newData;
+         });
+         // Optionally, still trigger a background refetch for consistency, but UI updates instantly
+         // fetchCalendarData(selectedCalendarDate || new Date());
+       } else {
+         toast({
+           variant: "destructive",
+           title: "Log failed",
+           description: response.message || "Could not log mood.",
+         });
+       }
+     } catch (error: any) {
+       toast({
+         variant: "destructive",
+         title: "API Error",
+         description: error.message || "Failed to log mood.",
+       });
+       if (error.message.includes("Session expired")) {
+         router.push("/login");
+       }
+     } finally {
+       setIsLoggingMood(null); // Reset logging state regardless of outcome
+     }
+   };
 
    // Modify useEffect for initial calendar fetch
    useEffect(() => {
@@ -368,15 +390,15 @@ export default function MoodPage() {
                   <Button
                     key={mood._id}
                     variant="outline"
-                    // Highlight button if it matches today's recorded mood OR if logging
+                    // Highlight button if it matches today's recorded mood
                     className={`h-10 px-3 ${todaysMood?._id === mood._id ? getMoodColorClass(mood.colorCode) : ""}`}
-                    onClick={() => handleLogTodayMood(mood._id)} // Add onClick handler
-                    disabled={isLoggingMood} // Disable while logging
+                    onClick={() => handleLogTodayMood(mood._id)}
+                    disabled={!!isLoggingMood} // Disable all buttons while any mood is being logged
                   >
-                    {isLoggingMood && todaysMood?._id !== mood._id ? ( // Show loader only on the clicked button if not already selected
-                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    {isLoggingMood === mood._id ? ( // Show loader only on the button being logged
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     ) : (
-                       <span className="mr-1 text-base">{mood.emoji}</span>
+                      <span className="mr-1 text-base">{mood.emoji}</span>
                     )}
                     <span>{mood.name}</span>
                   </Button>
@@ -432,10 +454,10 @@ export default function MoodPage() {
              {/* Popover for Custom Date Range Selection */}
              <Popover>
                <PopoverTrigger asChild>
-                  <Button
+                 <Button
                     variant="outline"
                     className={`w-full justify-start text-left font-normal ${!customDateRange.from ? 'text-muted-foreground' : ''}`}
-                    // Remove the disabled prop to allow opening anytime
+                    // No disabled attribute needed here
                   >
                     <CalendarIcon className="mr-2 h-4 w-4" />
                     {customDateRange.from ? (
